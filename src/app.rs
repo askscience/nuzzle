@@ -76,6 +76,7 @@ pub struct App {
     // layout
     narrow_mode: bool,
     should_quit: bool,
+    save_answer_needed: bool,
 }
 
 impl App {
@@ -123,6 +124,7 @@ impl App {
             status_time: Instant::now(),
             narrow_mode: false,
             should_quit: false,
+            save_answer_needed: false,
         }
     }
 
@@ -187,6 +189,17 @@ impl App {
             // process streaming tokens
             self.drain_stream();
 
+            if self.save_answer_needed {
+                self.save_answer_needed = false;
+                let answer = self.ask_answer.clone();
+                let sid = self.session_id;
+                let repo = self.repo.clone();
+                tokio::spawn(async move {
+                    let r = repo.lock().await;
+                    let _ = r.add_message(sid, "assistant", &answer);
+                });
+            }
+
             terminal.draw(|f| {
                 self.narrow_mode = f.area().width < 90;
                 self.render_ui(f)
@@ -211,7 +224,12 @@ impl App {
     fn drain_stream(&mut self) {
         if let Some(rx) = &mut self.streaming_rx {
             while let Ok(tok) = rx.try_recv() {
-                if tok == "__DONE__" { self.is_streaming = false; self.streaming_rx = None; break; }
+                if tok == "__DONE__" {
+                    self.is_streaming = false;
+                    self.streaming_rx = None;
+                    self.save_answer_needed = true;
+                    break;
+                }
                 self.ask_answer.push_str(&tok);
             }
         }
@@ -386,12 +404,10 @@ impl App {
         match self.mode {
             AppMode::Articles | AppMode::Reading | AppMode::Tag | AppMode::Highlight => {
                 self.summary_text = None;
-                self.ask_answer.clear();
                 self.mode = AppMode::Feeds;
             }
             AppMode::Search | AppMode::Ask | AppMode::Digest => {
                 self.mode = AppMode::Reading;
-                self.ask_answer.clear();
             }
             AppMode::Help => self.mode = self.prev_mode.clone(),
             _ => {}
@@ -441,8 +457,9 @@ impl App {
 
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
-        self.ask_answer = String::new();
         self.answer_scroll = 0;
+        // Append user question with marker
+        self.ask_answer.push_str(&format!("⟩ {}\n", question));
 
         // Save user message
         {
@@ -461,9 +478,6 @@ impl App {
         let fm = self.feed_manager.clone();
         let repo = self.repo.clone();
         let sid = self.session_id;
-        let article_ctx = self.entries.get(self.selected_entry)
-            .and_then(|e| e.content.as_deref().or(e.summary.as_deref()))
-            .unwrap_or("").to_string();
 
         tokio::spawn(async move {
             let system = "You are Nuzzle, a personal AI news assistant in a terminal RSS reader.\n\
@@ -511,35 +525,20 @@ impl App {
                     }
                     let prompt = if had_tool_call || !resp.message.content.is_empty() {
                         format!(
-                            "User asked: \"{}\"\n\nTool results:\n{}\n\nAnswer the user's question concisely.",
+                            "User asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.",
                             q, tool_results
                         )
                     } else {
                         q.clone()
                     };
-                    // Collect streamed response
-                    let mut full = String::new();
-                    let (itx, mut irx) = mpsc::unbounded_channel();
-                    let _ = client.generate_stream(&model, &system, &prompt, itx).await;
-                    while let Ok(tok) = irx.try_recv() {
-                        if tok == "__DONE__" { break; }
-                        full.push_str(&tok);
-                        tx.send(tok).ok();
-                    }
-                    tx.send("__DONE__".to_string()).ok();
-                    full
+                    // Stream directly to the UI channel
+                    let _ = client.generate_stream(&model, &system, &prompt, tx).await;
                 }
                 Err(e) => {
-                    let msg = format!("Error: {}", e);
-                    tx.send(msg.clone()).ok();
+                    tx.send(format!("Error: {}\n", e)).ok();
                     tx.send("__DONE__".to_string()).ok();
-                    msg
                 }
             };
-
-            // Save assistant response
-            let r = repo.lock().await;
-            let _ = r.add_message(sid, "assistant", &final_answer);
         });
 
         Ok(())
