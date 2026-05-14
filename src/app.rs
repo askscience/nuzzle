@@ -8,6 +8,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::prelude::Stylize;
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 use tokio::sync::{mpsc, Mutex};
 use tui_textarea::TextArea;
@@ -60,6 +61,7 @@ pub struct App {
 
     // ask streaming
     ask_answer: String,
+    last_question: String,
     answer_scroll: u16,
     is_streaming: bool,
     streaming_rx: Option<mpsc::UnboundedReceiver<String>>,
@@ -112,6 +114,7 @@ impl App {
             session_id: 0,
             session_name: String::new(),
             ask_answer: String::new(),
+            last_question: String::new(),
             answer_scroll: 0,
             is_streaming: false,
             streaming_rx: None,
@@ -228,6 +231,8 @@ impl App {
                     self.is_streaming = false;
                     self.streaming_rx = None;
                     self.save_answer_needed = true;
+                    // Append user question below the AI answer
+                    self.ask_answer.push_str(&format!("\n⟩ {}", self.last_question));
                     break;
                 }
                 self.ask_answer.push_str(&tok);
@@ -320,7 +325,15 @@ impl App {
             f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
             self.render_content(f, chunks[1]);
         } else if showing_answer {
-            let p = Paragraph::new(self.ask_answer.as_str()).wrap(Wrap { trim: false }).scroll((self.answer_scroll, 0));
+            let mut text = ratatui::text::Text::default();
+            for line in self.ask_answer.lines() {
+                if line.starts_with("⟩ ") {
+                    text.lines.push(Line::from(Span::styled(line, ratatui::style::Style::new().dim().gray())));
+                } else {
+                    text.lines.push(Line::from(Span::raw(line)));
+                }
+            }
+            let p = Paragraph::new(text).wrap(Wrap { trim: false }).scroll((self.answer_scroll, 0));
             f.render_widget(p, main_area);
         } else if showing_summary {
             if let Some(s) = &self.summary_text {
@@ -458,8 +471,10 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
-        // Append user question with ⟩ marker, then │ line for AI answer
-        self.ask_answer.push_str(&format!("⟩ {}\n│ ", question));
+        self.last_question = question.to_string();
+        // Start with marker for the AI answer line (question will be
+        // appended below it when streaming finishes)
+        self.ask_answer.push_str("│ ");
 
         // Save user message
         {
