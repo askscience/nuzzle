@@ -458,8 +458,8 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
-        // Append user question with marker + separator line
-        self.ask_answer.push_str(&format!("⟩ {}\n  ─\n", question));
+        // Append user question with ⟩ marker, then │ line for AI answer
+        self.ask_answer.push_str(&format!("⟩ {}\n│ ", question));
 
         // Save user message
         {
