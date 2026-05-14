@@ -87,7 +87,7 @@ impl App {
         feed_manager: FeedManager,
     ) -> Self {
         let mut ask_input = TextArea::default();
-        ask_input.set_placeholder_text("ask anything about your feeds...");
+        ask_input.set_placeholder_text("");
 
         Self {
             repo,
@@ -250,7 +250,7 @@ impl App {
                     if key.code == KeyCode::Enter && !self.ask_input.is_empty() {
                         let t = self.ask_input.lines().join(" ");
                         self.ask_input = TextArea::default();
-                        self.ask_input.set_placeholder_text("…");
+                        self.ask_input.set_placeholder_text("");
                         self.answer_scroll = 0;
                         self.handle_ask_submit(&t).await?;
                     }
@@ -458,8 +458,8 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
-        // Append user question with marker
-        self.ask_answer.push_str(&format!("⟩ {}\n", question));
+        // Append user question with marker + separator line
+        self.ask_answer.push_str(&format!("⟩ {}\n  ─\n", question));
 
         // Save user message
         {
