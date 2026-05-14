@@ -231,8 +231,6 @@ impl App {
                     self.is_streaming = false;
                     self.streaming_rx = None;
                     self.save_answer_needed = true;
-                    // Append user question below the AI answer
-                    self.ask_answer.push_str(&format!("\n⟩ {}", self.last_question));
                     break;
                 }
                 self.ask_answer.push_str(&tok);
@@ -472,9 +470,11 @@ impl App {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
         self.last_question = question.to_string();
-        // Start with marker for the AI answer line (question will be
-        // appended below it when streaming finishes)
-        self.ask_answer.push_str("│ ");
+        // Spacing between Q&A pairs, then ⟩ marker at top, then │ for AI answer stream
+        if !self.ask_answer.is_empty() {
+            self.ask_answer.push_str("\n\n");
+        }
+        self.ask_answer.push_str(&format!("⟩ {}\n│ ", question));
 
         // Save user message
         {
