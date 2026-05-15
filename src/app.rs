@@ -631,16 +631,10 @@ impl App {
                             }
                         }
                     }
-                    let full_prompt = format!(
+                    let prompt = format!(
                         "Conversation so far:\n{}\n\nUser asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.",
                         history_text, q, tool_results
                     );
-                    // Cap prompt size to avoid overwhelming the model
-                    let prompt = if full_prompt.len() > 6000 {
-                        format!("User asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.", q, &tool_results[..2000.min(tool_results.len())])
-                    } else {
-                        full_prompt
-                    };
                     let _ = client.generate_stream(&model, &system, &prompt, tx).await;
                 }
                 Err(e) => {

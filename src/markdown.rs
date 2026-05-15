@@ -97,31 +97,26 @@ fn parse_inline(line: &str) -> Line<'static> {
     let mut pos = 0;
 
     while pos < chars.len() {
+        let c = chars[pos];
+
         // Bold **text** or __text__
         if pos + 1 < chars.len()
-            && ((chars[pos] == '*' && chars[pos + 1] == '*')
-                || (chars[pos] == '_' && chars[pos + 1] == '_'))
+            && ((c == '*' && chars[pos + 1] == '*') || (c == '_' && chars[pos + 1] == '_'))
         {
-            let marker: &[char] = if chars[pos] == '*' { &['*', '*'] } else { &['_', '_'] };
-            let start = pos + 2;
-            if let Some(end) = find_str(&chars, start, marker) {
-                let text: String = chars[start..end].iter().collect();
+            let marker: &[char] = &[c, c];
+            if let Some(end) = find_str(&chars, pos + 2, marker) {
+                let text: String = chars[pos + 2..end].iter().collect();
                 spans.push(Span::styled(text, Style::new().bold()));
                 pos = end + 2;
                 continue;
             }
         }
 
-        // Italic *text* or _text_ (single char, not followed by same)
-        if (chars[pos] == '*' || chars[pos] == '_')
-            && pos + 1 < chars.len()
-            && chars[pos + 1] != chars[pos]
-        {
-            let target = chars[pos];
-            let start = pos + 1;
-            if let Some(end) = find_char(&chars, start, target) {
-                if end > start {
-                    let text: String = chars[start..end].iter().collect();
+        // Italic *text* or _text_ (single, not followed by same char)
+        if (c == '*' || c == '_') && pos + 1 < chars.len() && chars[pos + 1] != c {
+            if let Some(end) = find_char(&chars, pos + 1, c) {
+                if end > pos + 1 {
+                    let text: String = chars[pos + 1..end].iter().collect();
                     spans.push(Span::styled(text, Style::new().italic()));
                     pos = end + 1;
                     continue;
@@ -130,10 +125,9 @@ fn parse_inline(line: &str) -> Line<'static> {
         }
 
         // Inline code `text`
-        if chars[pos] == '`' {
-            let start = pos + 1;
-            if let Some(end) = find_char(&chars, start, '`') {
-                let text: String = chars[start..end].iter().collect();
+        if c == '`' {
+            if let Some(end) = find_char(&chars, pos + 1, '`') {
+                let text: String = chars[pos + 1..end].iter().collect();
                 spans.push(Span::styled(text, Style::new().bg(CODE_BG).fg(CODE_FG)));
                 pos = end + 1;
                 continue;
@@ -141,7 +135,7 @@ fn parse_inline(line: &str) -> Line<'static> {
         }
 
         // Link [text](url)
-        if chars[pos] == '[' {
+        if c == '[' {
             if let Some(title_end) = find_char(&chars, pos + 1, ']') {
                 if title_end + 1 < chars.len() && chars[title_end + 1] == '(' {
                     if let Some(url_end) = find_char(&chars, title_end + 2, ')') {
@@ -158,14 +152,17 @@ fn parse_inline(line: &str) -> Line<'static> {
             }
         }
 
-        // Plain character — batch consecutive plain chars
+        // Fallback: batch plain chars until next marker or end
         let plain_start = pos;
-        while pos < chars.len()
-            && !is_marker_start(&chars, pos)
-        {
+        while pos < chars.len() && !is_marker_start(&chars, pos) {
             pos += 1;
         }
-        if pos > plain_start {
+        if pos == plain_start {
+            // No plain chars: we're at a marker that couldn't be parsed.
+            // Output the marker char as plain and advance.
+            spans.push(Span::raw(c.to_string()));
+            pos += 1;
+        } else {
             let text: String = chars[plain_start..pos].iter().collect();
             spans.push(Span::raw(text));
         }
