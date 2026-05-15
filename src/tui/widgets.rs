@@ -1,7 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 use tui_textarea::TextArea;
 
 // ── Feed list sidebar ──
@@ -175,5 +175,51 @@ impl Widget for HelpOverlay {
             " The AI searches your feeds and streams a response.",
         ].join("\n");
         buf.set_string(area.x, area.y, &help, ratatui::style::Style::new().dim());
+    }
+}
+
+pub struct ModelList<'a> {
+    pub models: &'a [String],
+    pub selected: usize,
+    pub current: &'a str,
+}
+
+impl Widget for ModelList<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Clear.render(area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(ratatui::style::Style::new().cyan())
+            .title_top(" Models — j/k select, Enter choose, Esc cancel ");
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let max_items = inner.height as usize;
+        let header = format!("  Current: {}  ", self.current);
+        buf.set_string(inner.x + 1, inner.y, &header, ratatui::style::Style::new().dim());
+
+        if self.models.is_empty() {
+            buf.set_string(inner.x + 1, inner.y + 2, "  No models found.", ratatui::style::Style::new().dim());
+            return;
+        }
+
+        for (i, model) in self.models.iter().enumerate() {
+            let row = i + 2;
+            if row >= max_items { break; }
+            let sel = i == self.selected;
+            let prefix = if sel { "▸ " } else { "  " };
+            let mark = if model == self.current { " ←" } else { "" };
+            let style = if sel {
+                ratatui::style::Style::new().bold().cyan()
+            } else {
+                ratatui::style::Style::new()
+            };
+            let line = format!("{}{}{}", prefix, model, mark);
+            let width = inner.width.saturating_sub(2) as usize;
+            let trunc = if line.len() > width { &line[..width] } else { &line };
+            buf.set_string(inner.x + 1, inner.y + row as u16, trunc, style);
+        }
     }
 }

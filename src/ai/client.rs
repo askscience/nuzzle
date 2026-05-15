@@ -1,6 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use reqwest::Client as HttpClient;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -57,43 +58,46 @@ impl OllamaClient {
         }
     }
 
+    /// Send a POST request + deserialize, handling Ollama error responses.
+    async fn post_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+
+        #[derive(Debug, Deserialize)]
+        struct ErrorBody { error: String }
+
+        if let Ok(eb) = serde_json::from_str::<ErrorBody>(&raw) {
+            if !eb.error.is_empty() {
+                bail!("Ollama: {}", eb.error);
+            }
+        }
+
+        if !status.is_success() {
+            let preview = &raw[..raw.len().min(200)];
+            bail!("Ollama HTTP {}: {}", status.as_u16(), preview);
+        }
+
+        serde_json::from_str::<T>(&raw)
+            .with_context(|| format!("parse error for {} — raw: {}", path, &raw[..raw.len().min(300)]))
+    }
+
     pub async fn generate(&self, model: &str, prompt: &str) -> Result<String> {
         let body = json!({"model": model, "prompt": prompt, "stream": false});
-        let resp: GenerateResponse = self
-            .http
-            .post(format!("{}/api/generate", self.base_url))
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| "Failed to connect to Ollama")?
-            .json()
-            .await?;
+        let resp: GenerateResponse = self.post_json("/api/generate", body).await?;
         Ok(resp.response)
     }
 
     pub async fn generate_with_system(&self, model: &str, system: &str, prompt: &str) -> Result<String> {
         let body = json!({"model": model, "system": system, "prompt": prompt, "stream": false});
-        let resp: GenerateResponse = self
-            .http
-            .post(format!("{}/api/generate", self.base_url))
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: GenerateResponse = self.post_json("/api/generate", body).await?;
         Ok(resp.response)
     }
 
     pub async fn chat(&self, model: &str, messages: Vec<ChatMessage>) -> Result<String> {
         let body = json!({"model": model, "messages": messages, "stream": false});
-        let resp: ChatResponse = self
-            .http
-            .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: ChatResponse = self.post_json("/api/chat", body).await?;
         Ok(resp.message.content)
     }
 
@@ -102,15 +106,7 @@ impl OllamaClient {
     ) -> Result<ChatResponse> {
         let mut body = json!({"model": model, "messages": messages, "stream": false});
         if !tools.is_empty() { body["tools"] = json!(tools); }
-        let resp: ChatResponse = self
-            .http
-            .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(resp)
+        self.post_json("/api/chat", body).await
     }
 
     pub async fn generate_stream(
@@ -124,6 +120,7 @@ impl OllamaClient {
             .json(&body)
             .send()
             .await?;
+        let status = resp.status();
         let stream = resp.bytes_stream();
         futures::pin_mut!(stream);
         let mut buf = Vec::new();
@@ -135,6 +132,11 @@ impl OllamaClient {
                 let line_str = String::from_utf8_lossy(&line).trim().to_string();
                 if line_str.is_empty() { continue; }
                 if let Ok(val) = serde_json::from_str::<Value>(&line_str) {
+                    if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                        tx.send(format!("Error: {}\n", err)).ok();
+                        tx.send("__DONE__".to_string()).ok();
+                        return Ok(());
+                    }
                     if val.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
                         tx.send("__DONE__".to_string()).ok();
                     } else if let Some(t) = val.get("response").and_then(|v| v.as_str()) {
@@ -143,20 +145,16 @@ impl OllamaClient {
                 }
             }
         }
+        if !status.is_success() {
+            tx.send(format!("Error: Ollama HTTP {}\n", status.as_u16())).ok();
+        }
         tx.send("__DONE__".to_string()).ok();
         Ok(())
     }
 
     pub async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>> {
         let body = json!({"model": model, "input": input});
-        let resp: EmbeddingResponse = self
-            .http
-            .post(format!("{}/api/embeddings", self.base_url))
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: EmbeddingResponse = self.post_json("/api/embeddings", body).await?;
         Ok(resp.embedding)
     }
 
@@ -165,8 +163,21 @@ impl OllamaClient {
         struct ModelsResp { models: Vec<Model> }
         #[derive(Debug, Deserialize)]
         struct Model { name: String }
-        let resp: ModelsResp = self
-            .http.get(format!("{}/api/tags", self.base_url)).send().await?.json().await?;
+
+        let url = format!("{}/api/tags", self.base_url);
+        let resp_text = self.http.get(&url).send().await?.text().await?;
+
+        #[derive(Debug, Deserialize)]
+        struct ErrorBody { error: String }
+
+        if let Ok(eb) = serde_json::from_str::<ErrorBody>(&resp_text) {
+            if !eb.error.is_empty() {
+                bail!("Ollama: {}", eb.error);
+            }
+        }
+
+        let resp: ModelsResp = serde_json::from_str(&resp_text)
+            .with_context(|| format!("parse error: {}", &resp_text[..resp_text.len().min(200)]))?;
         Ok(resp.models.into_iter().map(|m| m.name).collect())
     }
 

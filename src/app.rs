@@ -75,6 +75,10 @@ pub struct App {
     status_message: Option<String>,
     status_time: Instant,
 
+    // model selection
+    available_models: Vec<String>,
+    model_list_selected: usize,
+
     // layout
     narrow_mode: bool,
     should_quit: bool,
@@ -125,6 +129,8 @@ impl App {
             current_tags: vec![],
             status_message: None,
             status_time: Instant::now(),
+            available_models: vec![],
+            model_list_selected: 0,
             narrow_mode: false,
             should_quit: false,
             save_answer_needed: false,
@@ -267,6 +273,33 @@ impl App {
                 return Ok(());
             }
             AppMode::Digest | AppMode::Help | AppMode::Highlight | AppMode::Tag => return Ok(()),
+            AppMode::ModelSelect => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down if key.kind == KeyEventKind::Press => {
+                        if self.model_list_selected + 1 < self.available_models.len() {
+                            self.model_list_selected += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if key.kind == KeyEventKind::Press => {
+                        if self.model_list_selected > 0 {
+                            self.model_list_selected -= 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(m) = self.available_models.get(self.model_list_selected) {
+                            self.config.ollama.model = m.clone();
+                            let _ = self.config.save();
+                            self.set_status(&format!("Model: {}", m));
+                        }
+                        self.mode = self.prev_mode.clone();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = self.prev_mode.clone();
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             _ => {}
         }
         if !matches!(self.mode, AppMode::Ask) {
@@ -315,6 +348,8 @@ impl App {
         let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.ask_answer.is_empty();
         let showing_summary = self.summary_text.is_some();
 
+        let showing_modal = self.mode == AppMode::ModelSelect;
+
         if !showing_answer && !showing_summary && self.mode != AppMode::Search {
             let chunks = ratatui::layout::Layout::default()
                 .direction(ratatui::layout::Direction::Horizontal)
@@ -343,6 +378,15 @@ impl App {
 
         f.render_widget(widgets::AskBar { input: &self.ask_input, spinner: self.spinner.current(), is_streaming: self.is_streaming }, ask_area);
         f.render_widget(widgets::MiniBar { text: "" }, status_area);
+
+        if showing_modal {
+            let popup_area = layout::centered_rect(f.area(), 60, 70);
+            f.render_widget(widgets::ModelList {
+                models: &self.available_models,
+                selected: self.model_list_selected,
+                current: &self.config.ollama.model,
+            }, popup_area);
+        }
     }
 
     fn render_content(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -420,7 +464,7 @@ impl App {
             AppMode::Search | AppMode::Ask | AppMode::Digest => {
                 self.mode = AppMode::Reading;
             }
-            AppMode::Help => self.mode = self.prev_mode.clone(),
+            AppMode::Help | AppMode::ModelSelect => self.mode = self.prev_mode.clone(),
             _ => {}
         }
     }
@@ -616,9 +660,17 @@ impl App {
             }
             "/models" => {
                 let m = self.ai.list_models().await.unwrap_or_default();
-                self.ask_answer = m.iter().map(|m| format!("  {}", m)).collect::<Vec<_>>().join("\n");
-                if self.ask_answer.is_empty() { self.ask_answer = "No models.".to_string(); }
-                self.mode = AppMode::Ask;
+                if m.is_empty() {
+                    self.ask_answer = "No models.".to_string();
+                    self.mode = AppMode::Ask;
+                } else {
+                    self.available_models = m;
+                    self.model_list_selected = self.available_models.iter()
+                        .position(|n| n == &self.config.ollama.model)
+                        .unwrap_or(0);
+                    self.prev_mode = self.mode.clone();
+                    self.mode = AppMode::ModelSelect;
+                }
             }
             "/model" => {
                 if parts.len() > 1 {

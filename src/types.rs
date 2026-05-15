@@ -86,6 +86,7 @@ pub enum AppMode {
     Tag,
     Highlight,
     Help,
+    ModelSelect,
 }
 
 #[derive(Debug, Clone)]
