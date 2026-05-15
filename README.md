@@ -19,7 +19,7 @@ Type questions in the ask bar at the bottom. Nuzzle searches your feeds, streams
 ## Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/master/install.sh | bash
 ```
 
 Requirements: Rust toolchain, Ollama.
