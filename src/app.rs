@@ -544,17 +544,25 @@ impl App {
         tokio::spawn(async move {
             let system = "You are Nuzzle, a personal AI news assistant in a terminal RSS reader.\n\
                 You have tools to search articles (search_news) and add feeds (add_feed).\n\
-                Call search_news to find relevant articles. If none found, suggest RSS feed URLs.\n\
+                Call search_news to find articles. If none found, suggest RSS feed URLs.\n\
                 If the user asks to add a feed, call add_feed.\n\
                 Be brief (2-4 sentences). Cite article titles.";
 
-            // Build full message history for /api/chat
+            // Build full message history including system prompt
             let hist = {
                 let r = repo.clone();
                 let r = r.lock().await;
-                r.session_messages(sid, 10).unwrap_or_default()
+                r.session_messages(sid, 20).unwrap_or_default()
             };
-            let mut msgs: Vec<ChatMessage> = vec![];
+            // Format history as text for streaming prompt
+            let history_text = hist.iter()
+                .map(|m| format!("[{}]: {}", m.role, m.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let mut msgs: Vec<ChatMessage> = vec![
+                ChatMessage { role: "system".to_string(), content: system.to_string(), tool_calls: None },
+            ];
             for m in hist {
                 msgs.push(ChatMessage { role: m.role, content: m.content, tool_calls: None });
             }
@@ -565,10 +573,8 @@ impl App {
             let final_answer = match tr {
                 Ok(resp) => {
                     let mut tool_results = String::new();
-                    let mut had_tool_call = false;
                     if let Some(tcs) = &resp.message.tool_calls {
                         for tc in tcs {
-                            had_tool_call = true;
                             if tc.function.name == "search_news" {
                                 let query = tc.function.arguments["query"].as_str().unwrap_or("");
                                 let max = tc.function.arguments["max_results"].as_u64().unwrap_or(5) as usize;
@@ -585,14 +591,10 @@ impl App {
                             }
                         }
                     }
-                    let prompt = if had_tool_call || !resp.message.content.is_empty() {
-                        format!(
-                            "User asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.",
-                            q, tool_results
-                        )
-                    } else {
-                        q.clone()
-                    };
+                    let prompt = format!(
+                        "Conversation so far:\n{}\n\nUser asked: \"{}\"\n\nTool results:\n{}\n\nAnswer the user's latest message concisely, using the conversation above for context.",
+                        history_text, q, tool_results
+                    );
                     // Stream directly to the UI channel
                     let _ = client.generate_stream(&model, &system, &prompt, tx).await;
                 }
