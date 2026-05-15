@@ -4,7 +4,7 @@ pub fn app_layout(area: Rect) -> (Rect, Rect, Rect, Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // header
+            Constraint::Length(2),  // header + sep
             Constraint::Min(1),     // content
             Constraint::Length(1),  // ask bar
             Constraint::Length(1),  // nav

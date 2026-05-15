@@ -14,6 +14,7 @@ pub struct Header<'a> {
 impl Widget for Header<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let style = ratatui::style::Style::new().dim();
+        let sep = "─".repeat(area.width as usize);
         let lw = area.width as usize;
         let left = if self.left.len() > lw { &self.left[..lw] } else { self.left };
         buf.set_string(area.x, area.y, left, style);
@@ -24,6 +25,9 @@ impl Widget for Header<'_> {
                 let x = area.x + lw.saturating_sub(rw) as u16;
                 buf.set_string(x, area.y, text, style);
             }
+        }
+        if area.height > 1 {
+            buf.set_string(area.x, area.y + 1, &sep, ratatui::style::Style::new().dim());
         }
     }
 }
