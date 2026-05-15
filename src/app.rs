@@ -266,12 +266,12 @@ impl App {
                     return Ok(());
                 }
                 match key.code {
-                    KeyCode::Char('j') | KeyCode::Down if key.kind == KeyEventKind::Press => {
+                    KeyCode::Down if key.kind == KeyEventKind::Press => {
                         if self.block_idx + 1 < self.blocks.len() {
                             self.block_idx += 1;
                         }
                     }
-                    KeyCode::Char('k') | KeyCode::Up if key.kind == KeyEventKind::Press => {
+                    KeyCode::Up if key.kind == KeyEventKind::Press => {
                         self.block_idx = self.block_idx.saturating_sub(1);
                     }
                     _ => {}
@@ -381,7 +381,7 @@ impl App {
             let p = Paragraph::new(text).wrap(Wrap { trim: false });
             f.render_widget(p, main_area);
             // Block indicator
-            let nav = format!("{}/{}  j/k nav", self.block_idx + 1, self.blocks.len());
+            let nav = format!("{}/{}  ↑↓ nav", self.block_idx + 1, self.blocks.len());
             let nav_area = Rect::new(status_area.x, status_area.y, status_area.width, 1);
             f.render_widget(widgets::MiniBar { text: &nav }, nav_area);
         } else if showing_summary {
