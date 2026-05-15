@@ -151,9 +151,17 @@ fn parse_inline(line: &str) -> Line<'static> {
             }
         }
 
-        // Plain character
-        spans.push(Span::raw(chars[pos].to_string()));
-        pos += 1;
+        // Plain character — batch consecutive plain chars
+        let plain_start = pos;
+        while pos < chars.len()
+            && !is_marker_start(&chars, pos)
+        {
+            pos += 1;
+        }
+        if pos > plain_start {
+            let text: String = chars[plain_start..pos].iter().collect();
+            spans.push(Span::raw(text));
+        }
     }
 
     Line::from(spans)
@@ -169,4 +177,16 @@ fn find_str(chars: &[char], start: usize, target: &[char]) -> Option<usize> {
         if chars[i..].starts_with(target) { return Some(i); }
     }
     None
+}
+
+fn is_marker_start(chars: &[char], pos: usize) -> bool {
+    if pos >= chars.len() { return false; }
+    let c = chars[pos];
+    // Bold/italic start
+    if c == '*' || c == '_' { return true; }
+    // Code start
+    if c == '`' { return true; }
+    // Link start
+    if c == '[' { return true; }
+    false
 }
