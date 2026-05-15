@@ -1,6 +1,25 @@
 #!/bin/bash
 set -e
 
+# === Args (supports: curl ... | bash -s -- --upgrade) ===
+UPGRADE=0
+for arg in "$@"; do
+    case "$arg" in
+        --upgrade|-u) UPGRADE=1 ;;
+        --help|-h)
+            echo "Nuzzle installer"
+            echo "Usage: install.sh [--upgrade|-u] [--help|-h]"
+            echo ""
+            echo "  (default)  Install if 'nuzzle' is not already on PATH."
+            echo "  --upgrade  Re-clone, rebuild, and replace the existing binary."
+            echo ""
+            echo "Upgrade via one-liner:"
+            echo "  curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/master/install.sh | bash -s -- --upgrade"
+            exit 0
+            ;;
+    esac
+done
+
 # === Colors ===
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -161,11 +180,18 @@ else
     line "$DOT Rust: ${GREEN}$(cargo --version | head -1)${NC}"
 fi
 
-# === Check if already installed ===
-if command -v nuzzle &>/dev/null; then
-    line "${GREEN}Nuzzle already installed at $(which nuzzle)${NC}"
-    line "Run 'nuzzle' to start."
+# === Check if already installed (skip only when not upgrading) ===
+if [ "$UPGRADE" -eq 0 ] && command -v nuzzle &>/dev/null; then
+    line "${YELLOW}Nuzzle already installed at $(command -v nuzzle)${NC}"
+    line "To rebuild from latest and replace it, run:"
+    line "  ${CYAN}curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/master/install.sh | bash -s -- --upgrade${NC}"
+    line "Or from a git clone: ${CYAN}./install.sh --upgrade${NC}"
     exit 0
+fi
+
+if [ "$UPGRADE" -eq 1 ]; then
+    line "$DOT ${BOLD}Upgrade mode${NC} — rebuilding from latest master"
+    echo ""
 fi
 
 # === Clone & build ===
@@ -191,18 +217,23 @@ echo ""
 INSTALL_DIR=""
 NO_SUDO=0
 
-# Prefer ~/.local/bin (no sudo on most modern Linux, also common on macOS)
-if [ -d "$HOME/.local/bin" ]; then
+if [ "$UPGRADE" -eq 1 ] && command -v nuzzle &>/dev/null; then
+    INSTALL_DIR="$(dirname "$(command -v nuzzle)")"
+    line "$DOT Installing over existing binary in ${BOLD}$INSTALL_DIR${NC}"
+    if [ -w "$INSTALL_DIR" ]; then
+        NO_SUDO=1
+    else
+        NO_SUDO=0
+    fi
+elif [ -d "$HOME/.local/bin" ]; then
     INSTALL_DIR="$HOME/.local/bin"
     NO_SUDO=1
 elif mkdir -p "$HOME/.local/bin" 2>/dev/null; then
     INSTALL_DIR="$HOME/.local/bin"
     NO_SUDO=1
-# Fallback: ~/.cargo/bin (Rust's default, already on PATH if rustup was used)
 elif [ -d "$HOME/.cargo/bin" ]; then
     INSTALL_DIR="$HOME/.cargo/bin"
     NO_SUDO=1
-# Last resort: /usr/local/bin (needs sudo)
 else
     INSTALL_DIR="/usr/local/bin"
     NO_SUDO=0
@@ -213,7 +244,7 @@ if [ "$NO_SUDO" -eq 1 ]; then
     line "${GREEN}Installed nuzzle → $INSTALL_DIR/nuzzle${NC}"
 else
     sudo cp "$TMPDIR/target/release/nuzzle" "$INSTALL_DIR/nuzzle"
-    line "${GREEN}Installed nuzzle → $INSTALL_DIR/nuzzle${NC}"
+    line "${GREEN}Installed nuzzle → $INSTALL_DIR/nuzzle${NC} ${YELLOW}(sudo)${NC}"
 fi
 
 # === PATH setup ===
@@ -276,8 +307,16 @@ fi
 
 echo ""
 if [ "$NO_SUDO" -eq 1 ]; then
-    line "${GREEN}${BOLD}Done!${NC} Run 'nuzzle' to start."
+    if [ "$UPGRADE" -eq 1 ]; then
+        line "${GREEN}${BOLD}Upgrade complete!${NC} Run 'nuzzle' to start."
+    else
+        line "${GREEN}${BOLD}Done!${NC} Run 'nuzzle' to start."
+    fi
 else
-    line "${YELLOW}${BOLD}Done!${NC} Run 'nuzzle' to start."
+    if [ "$UPGRADE" -eq 1 ]; then
+        line "${YELLOW}${BOLD}Upgrade complete!${NC} Run 'nuzzle' to start."
+    else
+        line "${YELLOW}${BOLD}Done!${NC} Run 'nuzzle' to start."
+    fi
 fi
 echo ""
