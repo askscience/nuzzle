@@ -355,20 +355,26 @@ impl App {
 
     fn render_ui(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
-        let (main_area, ask_area, status_area) = layout::app_layout(area);
+        let (header_area, content_area, ask_area, nav_area) = layout::app_layout(area);
         let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.blocks.is_empty();
-        let showing_summary = self.summary_text.is_some();
+        let narrow = area.width < 90;
 
-        let showing_modal = self.mode == AppMode::ModelSelect;
+        // ── Header ──
+        let (hl, hr) = if showing_answer {
+            (format!(" Q&A  ·  {}/{}", self.block_idx + 1, self.blocks.len()), String::new())
+        } else if self.mode == AppMode::Search {
+            (" Search  ·  Enter to run".to_string(), String::new())
+        } else {
+            let feed_name = self.feeds.get(self.selected_feed).map(|f| f.title.as_str()).unwrap_or("");
+            let count = if self.mode == AppMode::Feeds || self.mode == AppMode::Articles {
+                format!("{} articles", self.entries.len())
+            } else { String::new() };
+            (format!(" {}", feed_name), count)
+        };
+        f.render_widget(widgets::Header { left: &hl, right: &hr }, header_area);
 
-        if !showing_answer && !showing_summary && self.mode != AppMode::Search {
-            let chunks = ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Horizontal)
-                .constraints([ratatui::layout::Constraint::Percentage(25), ratatui::layout::Constraint::Percentage(75)])
-                .split(main_area);
-            f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
-            self.render_content(f, chunks[1]);
-        } else if showing_answer {
+        // ── Content ──
+        if showing_answer {
             let visible = self.blocks.get(self.block_idx).map(|s| s.as_str()).unwrap_or("");
             let mut text = ratatui::text::Text::default();
             for line in visible.lines() {
@@ -378,56 +384,46 @@ impl App {
                     text.lines.push(Line::from(Span::raw(line)));
                 }
             }
-            let p = Paragraph::new(text).wrap(Wrap { trim: false });
-            f.render_widget(p, main_area);
-            // Block indicator
-            let nav = format!("{}/{}  ↑↓ nav", self.block_idx + 1, self.blocks.len());
-            let nav_area = Rect::new(status_area.x, status_area.y, status_area.width, 1);
-            f.render_widget(widgets::MiniBar { text: &nav }, nav_area);
-        } else if showing_summary {
+            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), content_area);
+        } else if self.summary_text.is_some() {
             if let Some(s) = &self.summary_text {
-                f.render_widget(Paragraph::new(s.as_str()).wrap(Wrap { trim: false }).scroll((0, 0)), main_area);
+                f.render_widget(Paragraph::new(s.as_str()).wrap(Wrap { trim: false }), content_area);
             }
         } else {
-            self.render_content(f, main_area);
+            self.render_content(f, content_area, narrow);
         }
 
+        // ── Ask bar ──
         f.render_widget(widgets::AskBar { input: &self.ask_input, spinner: self.spinner.current(), is_streaming: self.is_streaming }, ask_area);
-        f.render_widget(widgets::MiniBar { text: "" }, status_area);
 
-        if showing_modal {
-            let popup_area = layout::centered_rect(f.area(), 60, 70);
-            f.render_widget(widgets::ModelList {
-                models: &self.available_models,
-                selected: self.model_list_selected,
-                current: &self.config.ollama.model,
-            }, popup_area);
+        // ── Nav ──
+        let nav = if self.is_streaming { format!(" {} streaming…", self.spinner.current()) } else if showing_answer { format!("  {}/{}  ↑↓ browse", self.block_idx + 1, self.blocks.len()) } else if let Some(s) = &self.status_message { s.clone() } else { String::new() };
+        f.render_widget(widgets::NavBar { text: &nav }, nav_area);
+
+        // ── Model popup ──
+        if self.mode == AppMode::ModelSelect {
+            let popup = layout::centered_rect(f.area(), 60, 70);
+            f.render_widget(widgets::ModelList { models: &self.available_models, selected: self.model_list_selected, current: &self.config.ollama.model }, popup);
         }
     }
 
-    fn render_content(&self, f: &mut ratatui::Frame, area: Rect) {
+    fn render_content(&self, f: &mut ratatui::Frame, area: Rect, narrow: bool) {
         match self.mode {
-            AppMode::Feeds if !self.entries.is_empty() => {
+            AppMode::Feeds | AppMode::Articles if narrow => {
                 f.render_widget(widgets::ArticleList { entries: &self.entries, selected: self.selected_entry }, area);
             }
-            AppMode::Feeds => {
-                let hint = Paragraph::new("  No articles — type /feed to refresh, or ask a question below").dim();
-                f.render_widget(hint, area);
-            }
-            AppMode::Articles if !self.entries.is_empty() => {
-                f.render_widget(widgets::ArticleList { entries: &self.entries, selected: self.selected_entry }, area);
+            AppMode::Feeds | AppMode::Articles => {
+                let chunks = ratatui::layout::Layout::horizontal([ratatui::layout::Constraint::Percentage(25), ratatui::layout::Constraint::Percentage(75)]).split(area);
+                f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
+                f.render_widget(widgets::ArticleList { entries: &self.entries, selected: self.selected_entry }, chunks[1]);
             }
             AppMode::Reading => {
                 let e = self.entries.get(self.selected_entry);
-                f.render_widget(widgets::ArticleView {
-                    title: e.and_then(|e| e.title.as_deref()),
-                    content: e.and_then(|e| e.content.as_deref().or(e.summary.as_deref())),
-                    scroll: self.scroll_offset,
-                }, area);
+                f.render_widget(widgets::ArticleView { title: e.and_then(|e| e.title.as_deref()), content: e.and_then(|e| e.content.as_deref().or(e.summary.as_deref())), scroll: self.scroll_offset }, area);
             }
             AppMode::Search => {
-                let t = if self.search_results.is_empty() { "Type query, Enter to search".to_string() }
-                else { self.search_results.iter().enumerate().map(|(i,r)| format!("{}{}", if i==self.search_selected{"▸ "}else{"  "}, r.entry.title.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n") };
+                let t = if self.search_results.is_empty() { "  Type query, Enter to search".to_string() }
+                else { self.search_results.iter().enumerate().map(|(i,r)| format!("  {}{}", if i==self.search_selected{"▸ "}else{"  "}, r.entry.title.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n") };
                 f.render_widget(Paragraph::new(t).wrap(Wrap { trim: false }), area);
             }
             AppMode::Digest => {
