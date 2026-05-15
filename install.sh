@@ -137,8 +137,26 @@ fi
 # === Install Rust ===
 if ! command -v cargo &>/dev/null; then
     line "$DOT Installing Rust toolchain..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
     source "$HOME/.cargo/env"
+
+    # Ensure ~/.cargo/bin is on PATH for the current session
+    export PATH="$HOME/.cargo/bin:$PATH"
+    # Persist across logins
+    SHELL_RC_FILE=""
+    case "$SHELL" in
+        */zsh) SHELL_RC_FILE="$HOME/.zshrc" ;;
+        */bash) SHELL_RC_FILE="$HOME/.bashrc" ;;
+        */fish) SHELL_RC_FILE="$HOME/.config/fish/config.fish" ;;
+        *) SHELL_RC_FILE="$HOME/.profile" ;;
+    esac
+    if [ -f "$SHELL_RC_FILE" ]; then
+        if ! grep -q '.cargo/bin' "$SHELL_RC_FILE" 2>/dev/null; then
+            echo "" >> "$SHELL_RC_FILE"
+            echo "# Rust toolchain" >> "$SHELL_RC_FILE"
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$SHELL_RC_FILE"
+        fi
+    fi
 else
     line "$DOT Rust: ${GREEN}$(cargo --version | head -1)${NC}"
 fi
