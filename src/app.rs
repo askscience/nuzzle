@@ -64,6 +64,7 @@ pub struct App {
     current_answer: String,
     last_question: String,
     answer_scroll: u16,
+    auto_scroll: bool,
     is_streaming: bool,
     streaming_rx: Option<mpsc::UnboundedReceiver<String>>,
 
@@ -122,6 +123,7 @@ impl App {
             current_answer: String::new(),
             last_question: String::new(),
             answer_scroll: 0,
+            auto_scroll: true,
             is_streaming: false,
             streaming_rx: None,
             loading_message: None,
@@ -238,13 +240,10 @@ impl App {
                     self.is_streaming = false;
                     self.streaming_rx = None;
                     self.save_answer_needed = true;
-                    // Scroll back a bit so user sees the question
-                    self.answer_scroll = self.answer_scroll.saturating_sub(2);
                     break;
                 }
                 self.current_answer.push_str(&tok);
                 self.ask_answer.push_str(&tok);
-                self.answer_scroll = u16::MAX;
             }
         }
     }
@@ -271,8 +270,14 @@ impl App {
                     return Ok(());
                 }
                 match key.code {
-                    KeyCode::Down if key.kind != KeyEventKind::Release => { self.answer_scroll += 1; }
-                    KeyCode::Up if key.kind != KeyEventKind::Release => { self.answer_scroll = self.answer_scroll.saturating_sub(1); }
+                    KeyCode::Down if key.kind != KeyEventKind::Release => {
+                        self.auto_scroll = false;
+                        self.answer_scroll = self.answer_scroll.saturating_add(1);
+                    }
+                    KeyCode::Up if key.kind != KeyEventKind::Release => {
+                        self.auto_scroll = false;
+                        self.answer_scroll = self.answer_scroll.saturating_sub(1);
+                    }
                     _ => {}
                 }
                 return Ok(());
@@ -368,6 +373,13 @@ impl App {
             f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
             self.render_content(f, chunks[1]);
         } else if showing_answer {
+            // Auto-scroll: calculate correct offset from content line count
+            let total_lines = self.ask_answer.lines().count() as u16;
+            let visible = main_area.height.saturating_sub(1);
+            let max_scroll = total_lines.saturating_sub(visible);
+            if self.auto_scroll {
+                self.answer_scroll = max_scroll;
+            }
             let mut text = ratatui::text::Text::default();
             for line in self.ask_answer.lines() {
                 if line.starts_with("⟩ ") {
@@ -525,7 +537,7 @@ impl App {
         self.answer_scroll = 0;
         self.last_question = question.to_string();
         self.current_answer.clear();
-        self.answer_scroll = u16::MAX; // autoscroll to latest
+        self.auto_scroll = true;
         // Spacing between Q&A pairs, then ⟩ marker at top, then │ for AI answer stream
         if !self.ask_answer.is_empty() {
             self.ask_answer.push_str("\n\n");
