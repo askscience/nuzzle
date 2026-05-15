@@ -6,7 +6,6 @@ use chrono::Utc;
 use crossterm::event::{self as cr_event, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
-use ratatui::prelude::Stylize;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::text::{Line, Span};
 use ratatui::Terminal;
@@ -14,7 +13,7 @@ use tokio::sync::{mpsc, Mutex};
 use tui_textarea::TextArea;
 
 use crate::ai::client::{ChatMessage, OllamaClient};
-use crate::ai::{digest, qa, summarizer, tools};
+use crate::ai::{digest, summarizer, tools};
 use crate::config::Config;
 use crate::db::repository::Repository;
 use crate::feed::manager::FeedManager;
@@ -598,7 +597,7 @@ impl App {
 
             let tr = client.chat_with_tools(&model, msgs, &tools::all_tools()).await;
 
-            let final_answer = match tr {
+            match tr {
                 Ok(resp) => {
                     let mut tool_results = String::new();
                     let mut last_search: Vec<crate::types::Entry> = vec![];
@@ -632,11 +631,16 @@ impl App {
                             }
                         }
                     }
-                    let prompt = format!(
-                        "Conversation so far:\n{}\n\nUser asked: \"{}\"\n\nTool results:\n{}\n\nAnswer the user's latest message concisely, using the conversation above for context.",
+                    let full_prompt = format!(
+                        "Conversation so far:\n{}\n\nUser asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.",
                         history_text, q, tool_results
                     );
-                    // Stream directly to the UI channel
+                    // Cap prompt size to avoid overwhelming the model
+                    let prompt = if full_prompt.len() > 6000 {
+                        format!("User asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.", q, &tool_results[..2000.min(tool_results.len())])
+                    } else {
+                        full_prompt
+                    };
                     let _ = client.generate_stream(&model, &system, &prompt, tx).await;
                 }
                 Err(e) => {
