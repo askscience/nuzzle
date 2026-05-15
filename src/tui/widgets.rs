@@ -198,7 +198,7 @@ impl Widget for LoadingScreen<'_> {
         let start_y = area.y + area.height.saturating_sub(h) / 2;
         for (i, line) in lines.iter().enumerate() {
             let x = area.x + area.width.saturating_sub(line.len() as u16) / 2;
-            let style = if i == 3 { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new().dim() };
+            let style = if i == 3 { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
             buf.set_string(x, start_y + i as u16, line, style);
         }
     }

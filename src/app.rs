@@ -362,9 +362,8 @@ impl App {
     fn render_ui(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
 
-        // Loading screen during init
-        if !self.app_ready {
-            let msg = self.loading_message.as_deref().unwrap_or("starting...");
+        // Loading screen while fetching
+        if let Some(msg) = &self.loading_message.clone() {
             f.render_widget(widgets::LoadingScreen { spinner: self.spinner.current(), message: msg }, area);
             return;
         }
