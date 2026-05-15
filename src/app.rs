@@ -238,10 +238,13 @@ impl App {
                     self.is_streaming = false;
                     self.streaming_rx = None;
                     self.save_answer_needed = true;
+                    // Scroll back a bit so user sees the question
+                    self.answer_scroll = self.answer_scroll.saturating_sub(2);
                     break;
                 }
                 self.current_answer.push_str(&tok);
                 self.ask_answer.push_str(&tok);
+                self.answer_scroll = u16::MAX;
             }
         }
     }
@@ -522,6 +525,7 @@ impl App {
         self.answer_scroll = 0;
         self.last_question = question.to_string();
         self.current_answer.clear();
+        self.answer_scroll = u16::MAX; // autoscroll to latest
         // Spacing between Q&A pairs, then ⟩ marker at top, then │ for AI answer stream
         if !self.ask_answer.is_empty() {
             self.ask_answer.push_str("\n\n");
@@ -578,6 +582,7 @@ impl App {
             let final_answer = match tr {
                 Ok(resp) => {
                     let mut tool_results = String::new();
+                    let mut last_search: Vec<crate::types::Entry> = vec![];
                     if let Some(tcs) = &resp.message.tool_calls {
                         for tc in tcs {
                             if tc.function.name == "search_news" {
@@ -586,6 +591,12 @@ impl App {
                                 let found = tools::execute_search_news(&all_entries, query, max);
                                 tool_results.push_str(&tools::format_search_results(&found));
                                 tool_results.push_str("\n\n");
+                                last_search = found;
+                            } else if tc.function.name == "read_article" {
+                                let idx = tc.function.arguments["index"].as_u64().unwrap_or(0) as usize;
+                                let title = tc.function.arguments["title"].as_str().unwrap_or("");
+                                let content = tools::execute_read_article(&last_search, idx, title);
+                                tool_results.push_str(&format!("ARTICLE CONTENT:\n{}\n\n", content));
                             } else if tc.function.name == "add_feed" {
                                 let url = tc.function.arguments["url"].as_str().unwrap_or("");
                                 let fm = fm.lock().await;
