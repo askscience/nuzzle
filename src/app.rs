@@ -392,7 +392,6 @@ impl App {
             let mut text = ratatui::text::Text::default();
             if let Some((question, answer)) = visible.split_once('\n') {
                 text.lines.push(Line::from(Span::styled(question, ratatui::style::Style::new().dim().cyan())));
-                text.lines.push(Line::from(Span::styled("─".repeat(80), ratatui::style::Style::new().dim())));
                 text.extend(markdown::render(answer));
             } else {
                 text = markdown::render(visible);
