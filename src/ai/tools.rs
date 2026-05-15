@@ -122,11 +122,13 @@ pub fn format_search_results(entries: &[Entry]) -> String {
             Suggested feeds:\n\
             • https://example.com/rss — description".to_string();
     }
-    let mut r = vec!["RESULTS: articles you can read with read_article(index):".to_string()];
+    let mut r = vec!["RESULTS (use read_article(index) to read full text):".to_string()];
     for (i, e) in entries.iter().enumerate() {
         let title = e.title.as_deref().unwrap_or("Untitled");
+        let link = e.link.as_deref().unwrap_or("");
         let summary = e.summary.as_deref().unwrap_or("");
-        r.push(format!("\n[{}] {} — {}", i + 1, title, summary));
+        let ln = if link.is_empty() { String::new() } else { format!(" [{}]", link) };
+        r.push(format!("\n[{}] {} — {}{}", i + 1, title, summary, ln));
     }
     r.join("\n")
 }

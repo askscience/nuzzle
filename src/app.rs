@@ -527,7 +527,7 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         // Start new block at front
-        self.blocks.insert(0, format!("⟩ {}\n\n│ ", question));
+        self.blocks.insert(0, format!("⟩ {}\n\n", question));
         self.block_idx = 0;
         self.block_idx = 0;
 
@@ -551,9 +551,10 @@ impl App {
 
         tokio::spawn(async move {
             let system = "You are Nuzzle, a personal AI news assistant in a terminal RSS reader.\n\
-                You have tools to search articles (search_news) and add feeds (add_feed).\n\
+                You have tools: search_news, read_article, add_feed.\n\
                 Call search_news to find articles. If none found, suggest RSS feed URLs.\n\
                 If the user asks to add a feed, call add_feed.\n\
+                When you have article links (shown as [url] in search results), share them.\n\
                 Be brief (2-4 sentences). Cite article titles.";
 
             // Build full message history including system prompt
