@@ -59,12 +59,10 @@ pub struct App {
     session_id: i64,
     session_name: String,
 
-    // ask streaming
-    question_line: String,   // fixed top line
-    conversation: String,    // scrollable history
-    stream_buffer: String,   // current streaming tokens
+    // conversation blocks — newest first
+    current_block: String,   // being streamed
+    history: String,         // completed blocks
     answer_scroll: u16,
-    auto_scroll: bool,
     is_streaming: bool,
     streaming_rx: Option<mpsc::UnboundedReceiver<String>>,
 
@@ -119,11 +117,9 @@ impl App {
             ask_input,
             session_id: 0,
             session_name: String::new(),
-            question_line: String::new(),
-            conversation: String::new(),
-            stream_buffer: String::new(),
+            current_block: String::new(),
+            history: String::new(),
             answer_scroll: 0,
-            auto_scroll: true,
             is_streaming: false,
             streaming_rx: None,
             loading_message: None,
@@ -204,18 +200,20 @@ impl App {
 
             if self.save_answer_needed {
                 self.save_answer_needed = false;
-                let answer = self.stream_buffer.clone();
+                let answer = self.current_block.clone();
+                // Save only the AI response part (after "│ ")
+                let ai_text = answer
+                    .lines().filter(|l| !l.starts_with("⟩ ")).collect::<Vec<_>>().join("\n");
                 let sid = self.session_id;
                 let repo = self.repo.lock().await;
-                let _ = repo.add_message(sid, "assistant", &answer);
+                let _ = repo.add_message(sid, "assistant", &ai_text);
                 drop(repo);
-                // Move current Q&A into conversation history
-                if !self.conversation.is_empty() {
-                    self.conversation.push_str("\n\n");
+                // Move completed block to history
+                if !self.history.is_empty() {
+                    self.history = format!("\n\n{}", self.history);
                 }
-                self.conversation.push_str(&format!("{}\n{}", self.question_line, self.stream_buffer));
-                self.question_line.clear();
-                self.stream_buffer.clear();
+                self.history = format!("{}{}", self.current_block, self.history);
+                self.current_block.clear();
             }
 
             terminal.draw(|f| {
@@ -248,7 +246,7 @@ impl App {
                     self.save_answer_needed = true;
                     break;
                 }
-                self.stream_buffer.push_str(&tok);
+                self.current_block.push_str(&tok);
             }
         }
     }
@@ -276,11 +274,9 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Down if key.kind != KeyEventKind::Release => {
-                        self.auto_scroll = false;
                         self.answer_scroll = self.answer_scroll.saturating_add(1);
                     }
                     KeyCode::Up if key.kind != KeyEventKind::Release => {
-                        self.auto_scroll = false;
                         self.answer_scroll = self.answer_scroll.saturating_sub(1);
                     }
                     _ => {}
@@ -365,7 +361,7 @@ impl App {
     fn render_ui(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
         let (main_area, ask_area, status_area) = layout::app_layout(area);
-        let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.conversation.is_empty() || !self.stream_buffer.is_empty() || !self.question_line.is_empty();
+        let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.current_block.is_empty() || !self.history.is_empty();
         let showing_summary = self.summary_text.is_some();
 
         let showing_modal = self.mode == AppMode::ModelSelect;
@@ -378,37 +374,18 @@ impl App {
             f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
             self.render_content(f, chunks[1]);
         } else if showing_answer {
-            let chunks = ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Vertical)
-                .constraints([ratatui::layout::Constraint::Length(1), ratatui::layout::Constraint::Min(0)])
-                .split(main_area);
-
-            // Fixed question line at top
-            if !self.question_line.is_empty() {
-                let chunks0 = chunks[0];
-                f.render_widget(
-                    widgets::MiniBar { text: &self.question_line },
-                    chunks0,
-                );
-            }
-
-            // Scrollable conversation below
-            let full = format!("{}{}", self.conversation, self.stream_buffer);
-            let total_lines = full.lines().count() as u16;
-            let visible = chunks[1].height.saturating_sub(1);
-            if self.auto_scroll {
-                self.answer_scroll = total_lines.saturating_sub(visible);
-            }
+            // Single scrollable view: current block (newest) + history
+            let view = format!("{}{}", self.current_block, self.history);
             let mut text = ratatui::text::Text::default();
-            for line in full.lines() {
+            for line in view.lines() {
                 if line.starts_with("⟩ ") {
-                    text.lines.push(Line::from(Span::styled(line, ratatui::style::Style::new().dim().gray())));
+                    text.lines.push(Line::from(Span::styled(line, ratatui::style::Style::new().dim().cyan())));
                 } else {
                     text.lines.push(Line::from(Span::raw(line)));
                 }
             }
             let p = Paragraph::new(text).wrap(Wrap { trim: false }).scroll((self.answer_scroll, 0));
-            f.render_widget(p, chunks[1]);
+            f.render_widget(p, main_area);
         } else if showing_summary {
             if let Some(s) = &self.summary_text {
                 f.render_widget(Paragraph::new(s.as_str()).wrap(Wrap { trim: false }).scroll((0, 0)), main_area);
@@ -554,10 +531,8 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
-        // Set question line (rendered fixed at top)
-        self.question_line = format!("⟩ {}", question);
-        self.stream_buffer.clear();
-        self.auto_scroll = true;
+        // Build new block: question on top, answer marker below
+        self.current_block = format!("⟩ {}\n\n│ ", question);
 
         // Save user message
         {
@@ -666,10 +641,8 @@ impl App {
             "/exit" => { self.should_quit = true; }
             "/feed" => {
                 self.mode = AppMode::Feeds;
-                self.question_line.clear();
-                self.conversation.clear();
-                self.stream_buffer.clear();
-                self.answer_scroll = 0;
+                self.current_block.clear();
+                self.history.clear();
                 self.answer_scroll = 0;
                 self.load_feeds_from_db().await?;
                 {
@@ -689,7 +662,7 @@ impl App {
                 self.session_id = repo.create_session(&name, &self.config.ollama.model)?;
                 drop(repo);
                 self.session_name = name;
-                self.question_line = "New session.".to_string();
+                self.current_block = "New session.".to_string();
                 self.mode = AppMode::Ask;
             }
             "/session" => {
@@ -699,20 +672,20 @@ impl App {
                     self.session_id = repo.create_session(n, &self.config.ollama.model)?;
                     self.session_name = n.to_string();
                     drop(repo);
-                    self.question_line = format!("Session \"{}\".", n);
+                    self.current_block = format!("Session \"{}\".", n);
                 } else {
                     let repo = self.repo.lock().await;
                     let s = repo.list_sessions()?;
                     drop(repo);
-                    self.question_line = s.iter().map(|s| format!("  {}", s.name)).collect::<Vec<_>>().join("\n");
-                    if self.question_line.is_empty() { self.question_line = "No sessions.".to_string(); }
+                    self.current_block = s.iter().map(|s| format!("  {}", s.name)).collect::<Vec<_>>().join("\n");
+                    if self.current_block.is_empty() { self.current_block = "No sessions.".to_string(); }
                 }
                 self.mode = AppMode::Ask;
             }
             "/models" => {
                 let m = self.ai.list_models().await.unwrap_or_default();
                 if m.is_empty() {
-                    self.question_line = "No models.".to_string();
+                    self.current_block = "No models.".to_string();
                     self.mode = AppMode::Ask;
                 } else {
                     self.available_models = m;
@@ -728,14 +701,14 @@ impl App {
                     let n = parts[1].trim();
                     self.config.ollama.model = n.to_string();
                     self.config.save()?;
-                    self.question_line = format!("Model: {}", n);
+                    self.current_block = format!("Model: {}", n);
                 } else {
-                    self.question_line = format!("Current: {}", self.config.ollama.model);
+                    self.current_block = format!("Current: {}", self.config.ollama.model);
                 }
                 self.mode = AppMode::Ask;
             }
             _ => {
-                self.question_line = "/exit /feed /new /session /models /model <name>".to_string();
+                self.current_block = "/exit /feed /new /session /models /model <name>".to_string();
                 self.mode = AppMode::Ask;
             }
         }
