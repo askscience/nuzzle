@@ -4,7 +4,7 @@ use ratatui::style::Stylize;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 use tui_textarea::TextArea;
 
-// ── Feed list sidebar ──
+// ── Feed sidebar ──
 
 pub struct FeedList<'a> {
     pub feeds: &'a [crate::types::Feed],
@@ -16,11 +16,19 @@ impl Widget for FeedList<'_> {
         for (i, feed) in self.feeds.iter().enumerate() {
             if i as u16 >= area.height { break; }
             let sel = i == self.selected;
-            let prefix = if sel { "▸ " } else { "  " };
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
-            let line = format!("{}{}", prefix, feed.title);
-            let trunc = if line.len() > area.width as usize { &line[..area.width as usize] } else { &line };
-            buf.set_string(area.x, area.y + i as u16, trunc, style);
+            let style = if sel {
+                ratatui::style::Style::new().bold().cyan()
+            } else {
+                ratatui::style::Style::new().dim()
+            };
+            let line = format!(" {}", feed.title);
+            let max = area.width.saturating_sub(1) as usize;
+            let trunc: String = if line.len() > max {
+                line.chars().take(max.saturating_sub(1)).chain(['…']).collect()
+            } else {
+                line
+            };
+            buf.set_string(area.x, area.y + i as u16, &trunc, style);
         }
     }
 }
@@ -35,19 +43,33 @@ pub struct ArticleList<'a> {
 impl Widget for ArticleList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         for (i, entry) in self.entries.iter().enumerate() {
-            if i as u16 >= area.height { break; }
+            if i as u16 + 1 >= area.height { break; }
             let sel = i == self.selected;
-            let prefix = if sel { "▸ " } else { "  " };
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else if entry.is_read { ratatui::style::Style::new().dim() } else { ratatui::style::Style::new() };
+            let y = area.y + i as u16;
+
+            let t_style = if sel { ratatui::style::Style::new().bold().cyan() } else if entry.is_read { ratatui::style::Style::new().dim() } else { ratatui::style::Style::new().bold() };
+            let s_style = ratatui::style::Style::new().dim();
+
             let title = entry.title.as_deref().unwrap_or("(untitled)");
-            let line = format!("{}{}", prefix, title);
-            let trunc = if line.len() > area.width as usize { &line[..area.width as usize] } else { &line };
-            buf.set_string(area.x, area.y + i as u16, trunc, style);
+            let max = area.width.saturating_sub(2) as usize;
+            let trunc: String = if title.len() > max { title.chars().take(max.saturating_sub(1)).chain(['…']).collect() } else { title.to_string() };
+
+            buf.set_string(area.x + 1, y, &format!(" {}", trunc), t_style);
+
+            // Show subtitle if there's room
+            if i as u16 + 2 < area.height {
+                let subtitle = entry.summary.as_deref().unwrap_or("");
+                let sub_max = max.saturating_sub(4);
+                let sub: String = if subtitle.len() > sub_max { subtitle.chars().take(sub_max.saturating_sub(1)).chain(['…']).collect() } else { subtitle.to_string() };
+                if !sub.is_empty() {
+                    buf.set_string(area.x + 3, y + 1, &format!(" {}", sub), s_style);
+                }
+            }
         }
     }
 }
 
-// ── Article reader view ──
+// ── Article reader ──
 
 pub struct ArticleView<'a> {
     pub title: Option<&'a str>,
@@ -64,7 +86,7 @@ impl Widget for ArticleView<'_> {
     }
 }
 
-// ── Status bar ──
+// ── Status / mini bar ──
 
 pub struct StatusBar<'a> {
     pub items: &'a [(&'a str, &'a str)],
@@ -87,7 +109,7 @@ impl Widget for MiniBar<'_> {
     }
 }
 
-// ── Ask bar (always visible, includes spinner when streaming) ──
+// ── Ask bar ──
 
 pub struct AskBar<'a> {
     pub input: &'a TextArea<'static>,
@@ -98,7 +120,7 @@ pub struct AskBar<'a> {
 impl Widget for AskBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let prefix = if self.is_streaming {
-            format!("{} │ ", self.spinner)
+            format!("{} ", self.spinner)
         } else {
             "⟩ ".to_string()
         };
@@ -148,13 +170,14 @@ impl Widget for SearchResults<'_> {
             let prefix = if sel { "▸ " } else { "  " };
             let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
             let line = format!("{}{}", prefix, title);
-            let trunc = if line.len() > area.width as usize { &line[..area.width as usize] } else { &line };
-            buf.set_string(area.x, area.y + i as u16, trunc, style);
+            let max = area.width as usize;
+            let trunc: String = if line.len() > max { line.chars().take(max.saturating_sub(1)).chain(['…']).collect() } else { line };
+            buf.set_string(area.x, area.y + i as u16, &trunc, style);
         }
     }
 }
 
-// ── Help panel ──
+// ── Help ──
 
 pub struct HelpOverlay;
 
@@ -178,6 +201,8 @@ impl Widget for HelpOverlay {
     }
 }
 
+// ── Model selector popup ──
+
 pub struct ModelList<'a> {
     pub models: &'a [String],
     pub selected: usize,
@@ -187,38 +212,29 @@ pub struct ModelList<'a> {
 impl Widget for ModelList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-
         let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
+            .borders(Borders::ALL).border_type(BorderType::Plain)
             .border_style(ratatui::style::Style::new().cyan())
             .title_top(" Models — j/k select, Enter choose, Esc cancel ");
         let inner = block.inner(area);
         block.render(area, buf);
-
         let max_items = inner.height as usize;
         let header = format!("  Current: {}  ", self.current);
         buf.set_string(inner.x + 1, inner.y, &header, ratatui::style::Style::new().dim());
-
         if self.models.is_empty() {
             buf.set_string(inner.x + 1, inner.y + 2, "  No models found.", ratatui::style::Style::new().dim());
             return;
         }
-
         for (i, model) in self.models.iter().enumerate() {
             let row = i + 2;
             if row >= max_items { break; }
             let sel = i == self.selected;
             let prefix = if sel { "▸ " } else { "  " };
             let mark = if model == self.current { " ←" } else { "" };
-            let style = if sel {
-                ratatui::style::Style::new().bold().cyan()
-            } else {
-                ratatui::style::Style::new()
-            };
+            let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
             let line = format!("{}{}{}", prefix, model, mark);
             let width = inner.width.saturating_sub(2) as usize;
-            let trunc = if line.len() > width { &line[..width] } else { &line };
+            let trunc: String = if line.len() > width { line.chars().take(width.saturating_sub(1)).chain(['…']).collect() } else { line };
             buf.set_string(inner.x + 1, inner.y + row as u16, trunc, style);
         }
     }

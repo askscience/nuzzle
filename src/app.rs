@@ -306,13 +306,18 @@ impl App {
         }
         if !matches!(self.mode, AppMode::Ask) {
             if self.ask_input.input(key) {
-                if key.code == KeyCode::Enter && !self.ask_input.is_empty() {
-                    let t = self.ask_input.lines().join(" ");
-                    self.ask_input = TextArea::default();
-                    self.ask_input.set_placeholder_text("…");
-                    self.handle_ask_submit(&t).await?;
+                if key.code == KeyCode::Enter {
+                    if !self.ask_input.is_empty() {
+                        let t = self.ask_input.lines().join(" ");
+                        self.ask_input = TextArea::default();
+                        self.ask_input.set_placeholder_text("");
+                        self.handle_ask_submit(&t).await?;
+                        return Ok(());
+                    }
+                    // Empty Enter — let action mapping open feed/article
+                } else {
+                    return Ok(()); // Textarea absorbed non-Enter key
                 }
-                return Ok(());
             }
         }
         match key.code {
@@ -521,7 +526,7 @@ impl App {
         if !self.ask_answer.is_empty() {
             self.ask_answer.push_str("\n\n");
         }
-        self.ask_answer.push_str(&format!("⟩ {}\n│ ", question));
+        self.ask_answer.push_str(&format!("⟩ {}\n\n│ ", question));
 
         // Save user message
         {
