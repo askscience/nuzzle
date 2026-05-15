@@ -5,6 +5,7 @@ mod db;
 mod event;
 mod feed;
 mod highlight;
+mod markdown;
 mod search;
 mod tui;
 mod types;

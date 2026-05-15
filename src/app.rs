@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::db::repository::Repository;
 use crate::feed::manager::FeedManager;
 use crate::highlight;
+use crate::markdown;
 use crate::search::index::EmbeddingIndex;
 use crate::search::query;
 use crate::tui::animations::{BrailleSpinner, BraillePulse};
@@ -379,12 +380,11 @@ impl App {
         if showing_answer {
             let visible = self.blocks.get(self.block_idx).map(|s| s.as_str()).unwrap_or("");
             let mut text = ratatui::text::Text::default();
-            for line in visible.lines() {
-                if line.starts_with("⟩ ") {
-                    text.lines.push(Line::from(Span::styled(line, ratatui::style::Style::new().dim().cyan())));
-                } else {
-                    text.lines.push(Line::from(Span::raw(line)));
-                }
+            if let Some((question, answer)) = visible.split_once('\n') {
+                text.lines.push(Line::from(Span::styled(question, ratatui::style::Style::new().dim().cyan())));
+                text.extend(markdown::render(answer));
+            } else {
+                text = markdown::render(visible);
             }
             f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), content_area);
         } else if self.summary_text.is_some() {
@@ -550,24 +550,21 @@ impl App {
         let sid = self.session_id;
 
         tokio::spawn(async move {
-            let system = "You are Nuzzle, a warm and helpful AI news assistant in a terminal RSS reader.\n\
-                You're curious, enthusiastic, and genuinely interested in helping users stay informed.\n\
-                You speak naturally and conversationally, like a knowledgeable friend sharing news.\n\n\
-                HOW TO USE YOUR TOOLS:\n\
-                - search_news: quick look for articles. Use for simple questions.\n\
+            let system = "You are Nuzzle, a capable AI news assistant in a terminal RSS reader.\n\
+                You are helpful, direct, and professional. You speak concisely and clearly.\n\
+                You support markdown formatting in your responses.\n\n\
+                TOOLS:\n\
+                - search_news: find articles. Use for surface-level questions.\n\
                 - read_article: read one article in full. Use for follow-ups.\n\
-                - deep_research: searches + reads multiple full articles. Use when the user\n\
-                  wants thorough analysis, deep understanding, or says 'tell me more'.\n\
-                - add_feed: subscribe to RSS feeds you suggest.\n\n\
-                RESPONSE STYLE:\n\
-                - Default: concise (2-4 sentences). Get to the point.\n\
-                - When the user asks for details, 'tell me more', a full analysis, or\n\
-                  after using deep_research: give a thorough, multi-paragraph answer.\n\
-                  Cover different angles, cite multiple articles, share links.\n\
-                - Always share article links when you have them.\n\
-                - Decide autonomously how deep to go based on the user's question.\n\
-                  A casual 'what's new?' needs just search_news. 'Analyze the latest\n\
-                  developments in AI regulation' calls for deep_research.";
+                - deep_research: search + read multiple full articles. Use for analysis.\n\
+                - add_feed: subscribe to RSS feeds.\n\n\
+                STYLE:\n\
+                - Default: 2-4 sentences, direct and informative.\n\
+                - For analysis or after deep_research: thorough, multi-paragraph.\n\
+                  Use **bold** for key points, # headings for structure,\n\
+                  and share article links as [title](url).\n\
+                - Choose tool depth based on the question. Casual = search_news,\n\
+                  detailed request = deep_research.";
 
             // Build full message history including system prompt
             let hist = {
