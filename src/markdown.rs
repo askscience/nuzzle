@@ -1,6 +1,13 @@
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 
+const HEADING: Color = Color::Rgb(186, 85, 211);
+const LINK: Color = Color::Rgb(100, 149, 237);
+const QUOTE: Color = Color::Rgb(169, 169, 169);
+const CODE_BG: Color = Color::Rgb(47, 79, 79);
+const CODE_FG: Color = Color::Rgb(255, 228, 225);
+const DIM: Color = Color::Rgb(169, 169, 169);
+
 /// Render markdown into a styled ratatui Text.
 pub fn render(text: &str) -> Text<'static> {
     let mut lines: Vec<Line> = vec![];
@@ -16,7 +23,7 @@ pub fn render(text: &str) -> Text<'static> {
         // Horizontal rule
         if trimmed.chars().all(|c| c == '-' || c == '_' || c == '*') && trimmed.len() >= 3 {
             let dashes = "─".repeat(80);
-            lines.push(Line::from(Span::styled(dashes, Style::new().dim())));
+            lines.push(Line::from(Span::styled(dashes, Style::new().fg(DIM))));
             continue;
         }
 
@@ -24,7 +31,7 @@ pub fn render(text: &str) -> Text<'static> {
         if let Some(content) = trimmed.strip_prefix("> ") {
             lines.push(Line::from(Span::styled(
                 format!("│ {}", content),
-                Style::new().dim().fg(Color::Gray),
+                Style::new().fg(QUOTE),
             )));
             continue;
         }
@@ -64,7 +71,7 @@ fn try_heading(line: &str) -> Option<Line<'static>> {
         if let Some(rest) = line.strip_prefix(&prefix) {
             return Some(Line::from(Span::styled(
                 rest.to_string(),
-                Style::new().bold().fg(Color::Cyan),
+                Style::new().bold().fg(HEADING),
             )));
         }
     }
@@ -127,7 +134,7 @@ fn parse_inline(line: &str) -> Line<'static> {
             let start = pos + 1;
             if let Some(end) = find_char(&chars, start, '`') {
                 let text: String = chars[start..end].iter().collect();
-                spans.push(Span::styled(text, Style::new().bg(Color::DarkGray).fg(Color::White)));
+                spans.push(Span::styled(text, Style::new().bg(CODE_BG).fg(CODE_FG)));
                 pos = end + 1;
                 continue;
             }
@@ -142,7 +149,7 @@ fn parse_inline(line: &str) -> Line<'static> {
                         let url: String = chars[title_end + 2..url_end].iter().collect();
                         spans.push(Span::styled(
                             format!("{} ({})", title, url),
-                            Style::new().add_modifier(Modifier::UNDERLINED).fg(Color::Cyan),
+                            Style::new().add_modifier(Modifier::UNDERLINED).fg(LINK),
                         ));
                         pos = url_end + 1;
                         continue;

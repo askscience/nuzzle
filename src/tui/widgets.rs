@@ -1,10 +1,20 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Stylize;
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 use tui_textarea::TextArea;
 
-// ── Header bar ──
+// Pastel palette
+const ACCENT: Color = Color::Rgb(135, 206, 250);  // light sky blue
+const DIM: Color = Color::Rgb(169, 169, 169);     // soft grey
+const QUESTION: Color = Color::Rgb(176, 196, 222); // light steel blue
+const CURSOR: Color = Color::Rgb(255, 255, 255);   // white
+
+fn accent_style() -> Style { Style::new().fg(ACCENT) }
+fn accent_bold() -> Style { Style::new().bold().fg(ACCENT) }
+fn dim_style() -> Style { Style::new().fg(DIM) }
+
+// ── Header ──
 
 pub struct Header<'a> {
     pub left: &'a str,
@@ -13,7 +23,7 @@ pub struct Header<'a> {
 
 impl Widget for Header<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = ratatui::style::Style::new().dim();
+        let style = dim_style();
         let sep = "─".repeat(area.width as usize);
         let lw = area.width as usize;
         let left = if self.left.len() > lw { &self.left[..lw] } else { self.left };
@@ -27,7 +37,7 @@ impl Widget for Header<'_> {
             }
         }
         if area.height > 1 {
-            buf.set_string(area.x, area.y + 1, &sep, ratatui::style::Style::new().dim());
+            buf.set_string(area.x, area.y + 1, &sep, dim_style());
         }
     }
 }
@@ -45,10 +55,9 @@ impl Widget for FeedList<'_> {
         for (i, feed) in self.feeds.iter().enumerate() {
             if i as u16 >= area.height { break; }
             let sel = i == self.selected;
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new().dim() };
+            let style = if sel { accent_bold() } else { dim_style() };
             let prefix = if sel { "▸ " } else { "  " };
-            let title = &feed.title;
-            let line = format!("{}{}", prefix, title);
+            let line = format!("{}{}", prefix, feed.title);
             let trunc: String = line.chars().take(width).collect();
             buf.set_string(area.x + 1, area.y + i as u16, &trunc, style);
         }
@@ -69,7 +78,7 @@ impl Widget for ArticleList<'_> {
             if i as u16 >= area.height { break; }
             let sel = i == self.selected;
             let num = format!("{:2}", i + 1);
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else if e.is_read { ratatui::style::Style::new().dim() } else { ratatui::style::Style::new() };
+            let style = if sel { accent_bold() } else if e.is_read { dim_style() } else { Style::new() };
             let title = e.title.as_deref().unwrap_or("(untitled)");
             let line = format!(" {} │ {}", num, title);
             let trunc: String = line.chars().take(width).collect();
@@ -106,7 +115,7 @@ pub struct AskBar<'a> {
 impl Widget for AskBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let prefix = if self.is_streaming { format!("{} ", self.spinner) } else { "⟩ ".to_string() };
-        let pstyle = if self.is_streaming { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new().dim().cyan() };
+        let pstyle = if self.is_streaming { accent_bold() } else { Style::new().fg(QUESTION) };
         buf.set_string(area.x + 1, area.y, &prefix, pstyle);
         let text = self.input.lines().join("");
         let pl = prefix.len() as u16 + 1;
@@ -118,12 +127,12 @@ impl Widget for AskBar<'_> {
         } else {
             (text, false)
         };
-        let style = if is_empty { ratatui::style::Style::new().dim() } else { ratatui::style::Style::new() };
+        let style = if is_empty { dim_style() } else { Style::new() };
         buf.set_string(area.x + pl, area.y, &display, style);
         if !is_empty {
             let cp = self.input.cursor().1;
             let cx = area.x + pl + cp.min(display.len()) as u16;
-            buf.set_string(cx, area.y, "▌", ratatui::style::Style::new().bold().white());
+            buf.set_string(cx, area.y, "▌", Style::new().bold().fg(CURSOR));
         }
     }
 }
@@ -136,8 +145,7 @@ pub struct NavBar<'a> {
 
 impl Widget for NavBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = ratatui::style::Style::new().dim();
-        buf.set_string(area.x + 1, area.y, self.text, style);
+        buf.set_string(area.x + 1, area.y, self.text, dim_style());
     }
 }
 
@@ -154,7 +162,7 @@ impl Widget for SearchResults<'_> {
             if i as u16 >= area.height { break; }
             let sel = i == self.selected;
             let prefix = if sel { "▸ " } else { "  " };
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
+            let style = if sel { accent_bold() } else { Style::new() };
             let line = format!("{}{}", prefix, title);
             let w = area.width as usize;
             let trunc: String = line.chars().take(w).collect();
@@ -170,7 +178,7 @@ pub struct HelpOverlay;
 impl Widget for HelpOverlay {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let help = " Nuzzle · commands\n\n /exit  quit    /feed  feeds    /new  session\n /models  pick model    /model <name>  switch\n\n ↑/↓  navigate    Enter  open\n type in the ask bar below to chat with AI";
-        buf.set_string(area.x + 1, area.y, help, ratatui::style::Style::new().dim());
+        buf.set_string(area.x + 1, area.y, help, dim_style());
     }
 }
 
@@ -183,22 +191,18 @@ pub struct LoadingScreen<'a> {
 
 impl Widget for LoadingScreen<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Center vertically
         let lines = vec![
-            "".to_string(),
-            "".to_string(),
-            "".to_string(),
+            "".to_string(), "".to_string(), "".to_string(),
             format!("      {}  N U Z Z L E", self.spinner),
             "".to_string(),
             format!("         {}", self.message),
-            "".to_string(),
-            "".to_string(),
+            "".to_string(), "".to_string(),
         ];
         let h = lines.len() as u16;
         let start_y = area.y + area.height.saturating_sub(h) / 2;
         for (i, line) in lines.iter().enumerate() {
             let x = area.x + area.width.saturating_sub(line.len() as u16) / 2;
-            let style = if i == 3 { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
+            let style = if i == 3 { accent_bold() } else { Style::new() };
             buf.set_string(x, start_y + i as u16, line, style);
         }
     }
@@ -215,11 +219,12 @@ pub struct ModelList<'a> {
 impl Widget for ModelList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Plain).border_style(ratatui::style::Style::new().cyan()).title_top(" Models ");
+        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Plain)
+            .border_style(accent_style()).title_top(" Models ");
         let inner = block.inner(area);
         block.render(area, buf);
         if self.models.is_empty() {
-            buf.set_string(inner.x + 1, inner.y + 1, "No models.", ratatui::style::Style::new().dim());
+            buf.set_string(inner.x + 1, inner.y + 1, "No models.", dim_style());
             return;
         }
         for (i, m) in self.models.iter().enumerate() {
@@ -227,7 +232,7 @@ impl Widget for ModelList<'_> {
             let sel = i == self.selected;
             let pfx = if sel { "▸ " } else { "  " };
             let mark = if m == self.current { " ←" } else { "" };
-            let style = if sel { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new() };
+            let style = if sel { accent_bold() } else { Style::new() };
             let line = format!("{}{}{}", pfx, m, mark);
             let w = inner.width.saturating_sub(2) as usize;
             let trunc: String = line.chars().take(w).collect();
