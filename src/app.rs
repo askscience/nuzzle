@@ -63,6 +63,7 @@ pub struct App {
     // conversation — blocks[0] = current/latest
     blocks: Vec<String>,
     block_idx: usize,        // 0 = latest, 1 = prev, ...
+    app_ready: bool,
     is_streaming: bool,
     streaming_rx: Option<mpsc::UnboundedReceiver<String>>,
 
@@ -119,6 +120,7 @@ impl App {
             session_name: String::new(),
             blocks: vec![],
             block_idx: 0,
+            app_ready: false,
             is_streaming: false,
             streaming_rx: None,
             loading_message: None,
@@ -154,6 +156,7 @@ impl App {
         }
         self.load_embedding_index().await;
         self.set_status(&format!("{} articles loaded", count));
+        self.app_ready = true;
         Ok(())
     }
 
@@ -358,6 +361,14 @@ impl App {
 
     fn render_ui(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
+
+        // Loading screen during init
+        if !self.app_ready {
+            let msg = self.loading_message.as_deref().unwrap_or("starting...");
+            f.render_widget(widgets::LoadingScreen { spinner: self.spinner.current(), message: msg }, area);
+            return;
+        }
+
         let (header_area, content_area, ask_area, nav_area) = layout::app_layout(area);
         let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.blocks.is_empty();
         let narrow = area.width < 90;

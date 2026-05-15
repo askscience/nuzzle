@@ -174,6 +174,36 @@ impl Widget for HelpOverlay {
     }
 }
 
+// ── Loading screen ──
+
+pub struct LoadingScreen<'a> {
+    pub spinner: &'a str,
+    pub message: &'a str,
+}
+
+impl Widget for LoadingScreen<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Center vertically
+        let lines = vec![
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            format!("      {}  N U Z Z L E", self.spinner),
+            "".to_string(),
+            format!("         {}", self.message),
+            "".to_string(),
+            "".to_string(),
+        ];
+        let h = lines.len() as u16;
+        let start_y = area.y + area.height.saturating_sub(h) / 2;
+        for (i, line) in lines.iter().enumerate() {
+            let x = area.x + area.width.saturating_sub(line.len() as u16) / 2;
+            let style = if i == 3 { ratatui::style::Style::new().bold().cyan() } else { ratatui::style::Style::new().dim() };
+            buf.set_string(x, start_y + i as u16, line, style);
+        }
+    }
+}
+
 // ── Model selector ──
 
 pub struct ModelList<'a> {

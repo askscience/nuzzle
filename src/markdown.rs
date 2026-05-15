@@ -82,27 +82,31 @@ fn parse_inline(line: &str) -> Line<'static> {
     let mut pos = 0;
     let chars: Vec<char> = line.chars().collect();
 
-    while pos < chars.len() {
-        // Bold **text**
-        if pos + 1 < chars.len() && chars[pos] == '*' && chars[pos + 1] == '*' {
-            let start = pos + 2;
-            if let Some(end) = find_str(&chars, start, "**") {
-                let text: String = chars[start..end].iter().collect();
-                spans.push(Span::styled(text, Style::new().bold()));
-                pos = end + 2;
-                continue;
+        while pos < chars.len() {
+            // Bold **text** or __text__
+            if pos + 1 < chars.len() && ((chars[pos] == '*' && chars[pos + 1] == '*') || (chars[pos] == '_' && chars[pos + 1] == '_')) {
+                let marker = if chars[pos] == '*' { "**" } else { "__" };
+                let start = pos + 2;
+                if let Some(end) = find_str(&chars, start, marker) {
+                    let text: String = chars[start..end].iter().collect();
+                    spans.push(Span::styled(text, Style::new().bold()));
+                    pos = end + 2;
+                    continue;
+                }
             }
-        }
-        // Italic *text*
-        if chars[pos] == '*' && (pos == 0 || chars[pos - 1] != '*') && pos + 1 < chars.len() {
-            let start = pos + 1;
-            if let Some(end) = find_char(&chars, start, '*') {
-                let text: String = chars[start..end].iter().collect();
-                spans.push(Span::styled(text, Style::new().italic()));
-                pos = end + 1;
-                continue;
+            // Italic *text* or _text_ (but not ** or __)
+            if (chars[pos] == '*' || chars[pos] == '_') && (pos == 0 || (chars[pos - 1] != '*' && chars[pos - 1] != '_')) && pos + 1 < chars.len() {
+                let start = pos + 1;
+                if let Some(end) = find_char(&chars, start, chars[pos]) {
+                    // Make sure not empty
+                    if end > start {
+                        let text: String = chars[start..end].iter().collect();
+                        spans.push(Span::styled(text, Style::new().italic()));
+                        pos = end + 1;
+                        continue;
+                    }
+                }
             }
-        }
         // Inline code `text`
         if chars[pos] == '`' {
             let start = pos + 1;
