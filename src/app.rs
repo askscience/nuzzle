@@ -248,22 +248,25 @@ impl App {
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match self.mode {
             AppMode::Search => {
-                if self.search_input.input(key) && key.code == KeyCode::Enter && !self.search_input.is_empty() {
-                    let t = self.search_input.lines().join(" ");
+                if self.search_input.input(key) && key.code == KeyCode::Enter {
+                    let t = self.search_input.lines().join(" ").trim().to_string();
                     self.search_input = TextArea::default();
-                    self.execute_search(&t).await?;
+                    if !t.is_empty() { self.execute_search(&t).await?; }
                 }
                 return Ok(());
             }
             AppMode::Ask => {
                 if self.ask_input.input(key) {
-                    if key.code == KeyCode::Enter && !self.ask_input.is_empty() {
-                        let t = self.ask_input.lines().join(" ");
+                    if key.code == KeyCode::Enter {
+                        let t = self.ask_input.lines().join(" ").trim().to_string();
                         self.ask_input = TextArea::default();
-                        self.ask_input.set_placeholder_text("");
-                        self.handle_ask_submit(&t).await?;
+                        if !t.is_empty() {
+                            self.handle_ask_submit(&t).await?;
+                            return Ok(());
+                        }
+                    } else {
+                        return Ok(());
                     }
-                    return Ok(());
                 }
                 match key.code {
                     KeyCode::Down if key.kind == KeyEventKind::Press => {
@@ -311,10 +314,9 @@ impl App {
         if !matches!(self.mode, AppMode::Ask) {
             if self.ask_input.input(key) {
                 if key.code == KeyCode::Enter {
-                    if !self.ask_input.is_empty() {
-                        let t = self.ask_input.lines().join(" ");
-                        self.ask_input = TextArea::default();
-                        self.ask_input.set_placeholder_text("");
+                    let t = self.ask_input.lines().join(" ").trim().to_string();
+                    self.ask_input = TextArea::default();
+                    if !t.is_empty() {
                         self.handle_ask_submit(&t).await?;
                         return Ok(());
                     }
@@ -397,7 +399,7 @@ impl App {
         f.render_widget(widgets::AskBar { input: &self.ask_input, spinner: self.spinner.current(), is_streaming: self.is_streaming }, ask_area);
 
         // ── Nav ──
-        let nav = if self.is_streaming { format!(" {} streaming…", self.spinner.current()) } else if showing_answer { format!("  {}/{}  ↑↓ browse", self.block_idx + 1, self.blocks.len()) } else if let Some(s) = &self.status_message { s.clone() } else { String::new() };
+        let nav = if showing_answer { format!("  {}/{}  ↑↓ browse", self.block_idx + 1, self.blocks.len()) } else { String::new() };
         f.render_widget(widgets::NavBar { text: &nav }, nav_area);
 
         // ── Model popup ──
@@ -592,8 +594,9 @@ impl App {
                             } else if tc.function.name == "read_article" {
                                 let idx = tc.function.arguments["index"].as_u64().unwrap_or(0) as usize;
                                 let title = tc.function.arguments["title"].as_str().unwrap_or("");
-                                let content = tools::execute_read_article(&last_search, idx, title);
-                                tool_results.push_str(&format!("ARTICLE CONTENT:\n{}\n\n", content));
+                                let src = if last_search.is_empty() { &all_entries[..] } else { &last_search[..] };
+                                let content = tools::execute_read_article(src, idx, title);
+                                tool_results.push_str(&format!("ARTICLE:\n{}\n\n", content));
                             } else if tc.function.name == "add_feed" {
                                 let url = tc.function.arguments["url"].as_str().unwrap_or("");
                                 let fm = fm.lock().await;
