@@ -60,9 +60,9 @@ pub struct App {
     session_name: String,
 
     // ask streaming
-    ask_answer: String,
-    current_answer: String,
-    last_question: String,
+    question_line: String,   // fixed top line
+    conversation: String,    // scrollable history
+    stream_buffer: String,   // current streaming tokens
     answer_scroll: u16,
     auto_scroll: bool,
     is_streaming: bool,
@@ -119,9 +119,9 @@ impl App {
             ask_input,
             session_id: 0,
             session_name: String::new(),
-            ask_answer: String::new(),
-            current_answer: String::new(),
-            last_question: String::new(),
+            question_line: String::new(),
+            conversation: String::new(),
+            stream_buffer: String::new(),
             answer_scroll: 0,
             auto_scroll: true,
             is_streaming: false,
@@ -204,12 +204,18 @@ impl App {
 
             if self.save_answer_needed {
                 self.save_answer_needed = false;
-                let answer = self.current_answer.clone();
-                self.current_answer.clear();
+                let answer = self.stream_buffer.clone();
                 let sid = self.session_id;
                 let repo = self.repo.lock().await;
                 let _ = repo.add_message(sid, "assistant", &answer);
                 drop(repo);
+                // Move current Q&A into conversation history
+                if !self.conversation.is_empty() {
+                    self.conversation.push_str("\n\n");
+                }
+                self.conversation.push_str(&format!("{}\n{}", self.question_line, self.stream_buffer));
+                self.question_line.clear();
+                self.stream_buffer.clear();
             }
 
             terminal.draw(|f| {
@@ -242,8 +248,7 @@ impl App {
                     self.save_answer_needed = true;
                     break;
                 }
-                self.current_answer.push_str(&tok);
-                self.ask_answer.push_str(&tok);
+                self.stream_buffer.push_str(&tok);
             }
         }
     }
@@ -360,7 +365,7 @@ impl App {
     fn render_ui(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
         let (main_area, ask_area, status_area) = layout::app_layout(area);
-        let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.ask_answer.is_empty();
+        let showing_answer = self.mode == AppMode::Ask || self.is_streaming || !self.conversation.is_empty() || !self.stream_buffer.is_empty() || !self.question_line.is_empty();
         let showing_summary = self.summary_text.is_some();
 
         let showing_modal = self.mode == AppMode::ModelSelect;
@@ -373,15 +378,29 @@ impl App {
             f.render_widget(widgets::FeedList { feeds: &self.feeds, selected: self.selected_feed }, chunks[0]);
             self.render_content(f, chunks[1]);
         } else if showing_answer {
-            // Auto-scroll: calculate correct offset from content line count
-            let total_lines = self.ask_answer.lines().count() as u16;
-            let visible = main_area.height.saturating_sub(1);
-            let max_scroll = total_lines.saturating_sub(visible);
+            let chunks = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([ratatui::layout::Constraint::Length(1), ratatui::layout::Constraint::Min(0)])
+                .split(main_area);
+
+            // Fixed question line at top
+            if !self.question_line.is_empty() {
+                let chunks0 = chunks[0];
+                f.render_widget(
+                    widgets::MiniBar { text: &self.question_line },
+                    chunks0,
+                );
+            }
+
+            // Scrollable conversation below
+            let full = format!("{}{}", self.conversation, self.stream_buffer);
+            let total_lines = full.lines().count() as u16;
+            let visible = chunks[1].height.saturating_sub(1);
             if self.auto_scroll {
-                self.answer_scroll = max_scroll;
+                self.answer_scroll = total_lines.saturating_sub(visible);
             }
             let mut text = ratatui::text::Text::default();
-            for line in self.ask_answer.lines() {
+            for line in full.lines() {
                 if line.starts_with("⟩ ") {
                     text.lines.push(Line::from(Span::styled(line, ratatui::style::Style::new().dim().gray())));
                 } else {
@@ -389,7 +408,7 @@ impl App {
                 }
             }
             let p = Paragraph::new(text).wrap(Wrap { trim: false }).scroll((self.answer_scroll, 0));
-            f.render_widget(p, main_area);
+            f.render_widget(p, chunks[1]);
         } else if showing_summary {
             if let Some(s) = &self.summary_text {
                 f.render_widget(Paragraph::new(s.as_str()).wrap(Wrap { trim: false }).scroll((0, 0)), main_area);
@@ -535,14 +554,10 @@ impl App {
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
-        self.last_question = question.to_string();
-        self.current_answer.clear();
+        // Set question line (rendered fixed at top)
+        self.question_line = format!("⟩ {}", question);
+        self.stream_buffer.clear();
         self.auto_scroll = true;
-        // Spacing between Q&A pairs, then ⟩ marker at top, then │ for AI answer stream
-        if !self.ask_answer.is_empty() {
-            self.ask_answer.push_str("\n\n");
-        }
-        self.ask_answer.push_str(&format!("⟩ {}\n\n│ ", question));
 
         // Save user message
         {
@@ -651,7 +666,10 @@ impl App {
             "/exit" => { self.should_quit = true; }
             "/feed" => {
                 self.mode = AppMode::Feeds;
-                self.ask_answer.clear();
+                self.question_line.clear();
+                self.conversation.clear();
+                self.stream_buffer.clear();
+                self.answer_scroll = 0;
                 self.answer_scroll = 0;
                 self.load_feeds_from_db().await?;
                 {
@@ -671,7 +689,7 @@ impl App {
                 self.session_id = repo.create_session(&name, &self.config.ollama.model)?;
                 drop(repo);
                 self.session_name = name;
-                self.ask_answer = "New session.".to_string();
+                self.question_line = "New session.".to_string();
                 self.mode = AppMode::Ask;
             }
             "/session" => {
@@ -681,20 +699,20 @@ impl App {
                     self.session_id = repo.create_session(n, &self.config.ollama.model)?;
                     self.session_name = n.to_string();
                     drop(repo);
-                    self.ask_answer = format!("Session \"{}\".", n);
+                    self.question_line = format!("Session \"{}\".", n);
                 } else {
                     let repo = self.repo.lock().await;
                     let s = repo.list_sessions()?;
                     drop(repo);
-                    self.ask_answer = s.iter().map(|s| format!("  {}", s.name)).collect::<Vec<_>>().join("\n");
-                    if self.ask_answer.is_empty() { self.ask_answer = "No sessions.".to_string(); }
+                    self.question_line = s.iter().map(|s| format!("  {}", s.name)).collect::<Vec<_>>().join("\n");
+                    if self.question_line.is_empty() { self.question_line = "No sessions.".to_string(); }
                 }
                 self.mode = AppMode::Ask;
             }
             "/models" => {
                 let m = self.ai.list_models().await.unwrap_or_default();
                 if m.is_empty() {
-                    self.ask_answer = "No models.".to_string();
+                    self.question_line = "No models.".to_string();
                     self.mode = AppMode::Ask;
                 } else {
                     self.available_models = m;
@@ -710,14 +728,14 @@ impl App {
                     let n = parts[1].trim();
                     self.config.ollama.model = n.to_string();
                     self.config.save()?;
-                    self.ask_answer = format!("Model: {}", n);
+                    self.question_line = format!("Model: {}", n);
                 } else {
-                    self.ask_answer = format!("Current: {}", self.config.ollama.model);
+                    self.question_line = format!("Current: {}", self.config.ollama.model);
                 }
                 self.mode = AppMode::Ask;
             }
             _ => {
-                self.ask_answer = "/exit /feed /new /session /models /model <name>".to_string();
+                self.question_line = "/exit /feed /new /session /models /model <name>".to_string();
                 self.mode = AppMode::Ask;
             }
         }
