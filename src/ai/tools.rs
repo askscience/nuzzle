@@ -70,10 +70,36 @@ pub const READ_ARTICLE_TOOL: &str = r#"
 }
 "#;
 
+pub const DEEP_RESEARCH_TOOL: &str = r#"
+{
+  "type": "function",
+  "function": {
+    "name": "deep_research",
+    "description": "Perform deep research on a topic: automatically searches for matching articles AND reads their full content. Use this when the user asks for in-depth analysis or wants to understand a topic thoroughly. Returns full article texts from multiple sources.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "The topic or question to research deeply"
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Number of articles to read in full (default 3, max 5)",
+          "default": 3
+        }
+      },
+      "required": ["topic"]
+    }
+  }
+}
+"#;
+
 pub fn search_news_tool() -> Value { serde_json::from_str(SEARCH_NEWS_TOOL).unwrap() }
 pub fn add_feed_tool() -> Value { serde_json::from_str(ADD_FEED_TOOL).unwrap() }
 pub fn read_article_tool() -> Value { serde_json::from_str(READ_ARTICLE_TOOL).unwrap() }
-pub fn all_tools() -> Vec<Value> { vec![search_news_tool(), add_feed_tool(), read_article_tool()] }
+pub fn deep_research_tool() -> Value { serde_json::from_str(DEEP_RESEARCH_TOOL).unwrap() }
+pub fn all_tools() -> Vec<Value> { vec![search_news_tool(), add_feed_tool(), read_article_tool(), deep_research_tool()] }
 
 pub fn execute_search_news(entries: &[Entry], query: &str, max_results: usize) -> Vec<Entry> {
     let query_lower = query.to_lowercase();
@@ -112,6 +138,24 @@ pub fn execute_read_article(entries: &[Entry], idx: usize, title_part: &str) -> 
         }
     }
     "Article not found. Check the index or title.".to_string()
+}
+
+pub fn execute_deep_research(entries: &[Entry], topic: &str, depth: usize) -> String {
+    let depth = depth.min(5).max(1);
+    let found = execute_search_news(entries, topic, depth);
+    if found.is_empty() {
+        return "No articles found for this topic. Suggest 2-3 RSS feed URLs the user can add to get coverage for this topic.".to_string();
+    }
+    let mut r = format!("Deep research on '{}' — {} articles read in full:\n", topic, found.len());
+    for (i, e) in found.iter().enumerate() {
+        let title = e.title.as_deref().unwrap_or("Untitled");
+        let link = e.link.as_deref().unwrap_or("");
+        let content = e.content.as_deref().unwrap_or(e.summary.as_deref().unwrap_or("No content"));
+        r.push_str(&format!("\n── Article {} ──\nTitle: {}\n", i + 1, title));
+        if !link.is_empty() { r.push_str(&format!("Link: {}\n", link)); }
+        r.push_str(&format!("\n{}\n", content));
+    }
+    r
 }
 
 pub fn format_search_results(entries: &[Entry]) -> String {

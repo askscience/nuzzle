@@ -550,12 +550,15 @@ impl App {
         let sid = self.session_id;
 
         tokio::spawn(async move {
-            let system = "You are Nuzzle, a personal AI news assistant in a terminal RSS reader.\n\
-                You have tools: search_news, read_article, add_feed.\n\
+            let system = "You are Nuzzle, a warm and helpful AI news assistant in a terminal RSS reader.\n\
+                You're curious, enthusiastic, and genuinely interested in helping users stay informed.\n\
+                You speak naturally and conversationally, like a knowledgeable friend sharing news.\n\
+                You have tools: search_news, read_article, add_feed, deep_research.\n\
+                Use deep_research when the user wants thorough analysis on a topic.\n\
                 Call search_news to find articles. If none found, suggest RSS feed URLs.\n\
                 If the user asks to add a feed, call add_feed.\n\
-                When you have article links (shown as [url] in search results), share them.\n\
-                Be brief (2-4 sentences). Cite article titles.";
+                When you have article links (shown as [url] in results), share them.\n\
+                Be concise (2-4 sentences) but thorough. Cite article titles.";
 
             // Build full message history including system prompt
             let hist = {
@@ -598,6 +601,11 @@ impl App {
                                 let src = if last_search.is_empty() { &all_entries[..] } else { &last_search[..] };
                                 let content = tools::execute_read_article(src, idx, title);
                                 tool_results.push_str(&format!("ARTICLE:\n{}\n\n", content));
+                            } else if tc.function.name == "deep_research" {
+                                let topic = tc.function.arguments["topic"].as_str().unwrap_or("");
+                                let depth = tc.function.arguments["depth"].as_u64().unwrap_or(3) as usize;
+                                tool_results.push_str(&tools::execute_deep_research(&all_entries, topic, depth));
+                                tool_results.push_str("\n\n");
                             } else if tc.function.name == "add_feed" {
                                 let url = tc.function.arguments["url"].as_str().unwrap_or("");
                                 let fm = fm.lock().await;
