@@ -61,6 +61,7 @@ pub struct App {
 
     // ask streaming
     ask_answer: String,
+    current_answer: String,
     last_question: String,
     answer_scroll: u16,
     is_streaming: bool,
@@ -118,6 +119,7 @@ impl App {
             session_id: 0,
             session_name: String::new(),
             ask_answer: String::new(),
+            current_answer: String::new(),
             last_question: String::new(),
             answer_scroll: 0,
             is_streaming: false,
@@ -200,13 +202,12 @@ impl App {
 
             if self.save_answer_needed {
                 self.save_answer_needed = false;
-                let answer = self.ask_answer.clone();
+                let answer = self.current_answer.clone();
+                self.current_answer.clear();
                 let sid = self.session_id;
-                let repo = self.repo.clone();
-                tokio::spawn(async move {
-                    let r = repo.lock().await;
-                    let _ = r.add_message(sid, "assistant", &answer);
-                });
+                let repo = self.repo.lock().await;
+                let _ = repo.add_message(sid, "assistant", &answer);
+                drop(repo);
             }
 
             terminal.draw(|f| {
@@ -239,6 +240,7 @@ impl App {
                     self.save_answer_needed = true;
                     break;
                 }
+                self.current_answer.push_str(&tok);
                 self.ask_answer.push_str(&tok);
             }
         }
@@ -514,6 +516,7 @@ impl App {
         self.mode = AppMode::Ask;
         self.answer_scroll = 0;
         self.last_question = question.to_string();
+        self.current_answer.clear();
         // Spacing between Q&A pairs, then ⟩ marker at top, then │ for AI answer stream
         if !self.ask_answer.is_empty() {
             self.ask_answer.push_str("\n\n");
