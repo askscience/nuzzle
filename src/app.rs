@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +16,7 @@ use tokio::sync::{mpsc, Mutex};
 use tui_textarea::TextArea;
 
 use crate::ai::client::{ChatMessage, OllamaClient};
-use crate::ai::{digest, summarizer, tools};
+use crate::ai::{digest, summarizer};
 use crate::config::Config;
 use crate::db::repository::Repository;
 use crate::feed::manager::FeedManager;
@@ -21,6 +24,7 @@ use crate::highlight;
 use crate::markdown;
 use crate::search::index::EmbeddingIndex;
 use crate::search::query;
+use crate::tools::registry::ToolRegistry;
 use crate::tui::animations::{BrailleSpinner, BraillePulse};
 use crate::tui::{layout, widgets};
 use crate::types::*;
@@ -58,6 +62,12 @@ pub struct App {
     // sessions
     session_id: i64,
     session_name: String,
+    session_type: SessionType,
+    session_described: bool,
+
+    // tool system
+    tool_registry: ToolRegistry,
+    workspace_dir: PathBuf,
 
     // conversation — blocks[0] = current/latest
     blocks: Vec<String>,
@@ -95,6 +105,14 @@ impl App {
         let mut ask_input = TextArea::default();
         ask_input.set_placeholder_text("");
 
+        let data_dir = PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+        ).join(".local/share/nuzzle");
+
+        let mut tool_registry = ToolRegistry::new();
+        let scripts_dir = config.tools.scripts_dir.clone();
+        tool_registry.load(&scripts_dir);
+
         Self {
             repo,
             ai,
@@ -117,6 +135,10 @@ impl App {
             ask_input,
             session_id: 0,
             session_name: String::new(),
+            session_type: SessionType::Chat,
+            session_described: false,
+            tool_registry,
+            workspace_dir: data_dir.join("code"),
             blocks: vec![],
             block_idx: 0,
             app_ready: false,
@@ -150,9 +172,11 @@ impl App {
         {
             let repo = self.repo.lock().await;
             self.all_entries = repo.list_all_entries()?;
-            self.session_id = repo.create_session("default", &self.config.ollama.model)?;
-            self.session_name = String::new();
+            self.session_id = repo.create_session_typed("default", &self.config.ollama.model, &SessionType::Chat)?;
+            self.session_name = "default".to_string();
+            self.session_type = SessionType::Chat;
         }
+        self.install_builtin_tools();
         self.load_embedding_index().await;
         self.set_status(&format!("{} articles loaded", count));
         self.app_ready = true;
@@ -186,6 +210,30 @@ impl App {
         }
     }
 
+    fn install_builtin_tools(&mut self) {
+        let scripts_dir = &self.config.tools.scripts_dir;
+        let _ = std::fs::create_dir_all(scripts_dir);
+
+        // Copy builtin scripts if they don't exist
+        let builtin_base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/builtin");
+        if !builtin_base.exists() { return; }
+
+        if let Ok(entries) = std::fs::read_dir(&builtin_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "sh") {
+                    let dest = scripts_dir.join(path.file_name().unwrap());
+                    if !dest.exists() {
+                        let _ = std::fs::copy(&path, &dest);
+                        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                    }
+                }
+            }
+        }
+        // Reload registry with newly installed tools
+        self.tool_registry.load(scripts_dir);
+    }
+
     fn set_status(&mut self, msg: &str) {
         self.status_message = Some(msg.to_string());
         self.status_time = Instant::now();
@@ -207,7 +255,34 @@ impl App {
                     let sid = self.session_id;
                     let repo = self.repo.lock().await;
                     let _ = repo.add_message(sid, "assistant", &ai_text);
-                    drop(repo);
+
+                    // Auto-generate session description after first exchange
+                    if !self.session_described {
+                        if let Ok(msgs) = repo.session_messages(sid, 6) {
+                            drop(repo);
+                            let chat_msgs: Vec<ChatMessage> = msgs.iter()
+                                .map(|m| ChatMessage { role: m.role.clone(), content: m.content.clone(), tool_calls: None })
+                                .collect();
+                            if chat_msgs.len() >= 2 {
+                                let ai_clone = self.ai.clone();
+                                let model_clone = self.config.ollama.model.clone();
+                                let repo2 = self.repo.clone();
+                                tokio::spawn(async move {
+                                    let desc = ai_clone.generate_description(&model_clone, &chat_msgs).await;
+                                    if !desc.is_empty() {
+                                        let r = repo2.lock().await;
+                                        let _ = r.update_session_description(sid, &desc);
+                                        drop(r);
+                                    }
+                                });
+                                self.session_described = true;
+                            }
+                        } else {
+                            drop(repo);
+                        }
+                    } else {
+                        drop(repo);
+                    }
                 }
             }
 
@@ -531,13 +606,12 @@ impl App {
         Ok(())
     }
 
-    // ── ask with tool calling + streaming ──
+    // ── ask with text-based tool protocol + streaming ──
 
     async fn execute_ask(&mut self, question: &str) -> Result<()> {
         self.mode = AppMode::Ask;
         // Start new block at front
         self.blocks.insert(0, format!("⟩ {}\n\n", question));
-        self.block_idx = 0;
         self.block_idx = 0;
 
         // Save user message
@@ -552,99 +626,132 @@ impl App {
 
         let client = self.ai.clone();
         let model = self.config.ollama.model.clone();
-        let all_entries = self.all_entries.clone();
         let q = question.to_string();
-        let fm = self.feed_manager.clone();
-        let repo = self.repo.clone();
         let sid = self.session_id;
+        let stype = self.session_type.clone();
+        let stype_str = stype.as_str().to_string();
 
+        // Build tools description for this session type
+        let tools_prompt = self.tool_registry.build_system_prompt(&stype_str);
+
+        // Load session files for code/search sessions
+        let session_files_prompt = self.build_session_files_prompt().await;
+
+        let system_prompt = self.build_system_prompt(&tools_prompt, &session_files_prompt);
+
+        // Build message history for the AI
+        let hist = {
+            let r = self.repo.clone();
+            let r = r.lock().await;
+            r.session_messages(sid, 20).unwrap_or_default()
+        };
+        let chat_history: Vec<ChatMessage> = hist.iter()
+            .map(|m| ChatMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                tool_calls: None,
+            })
+            .collect();
+
+        // Save whether this session needs description
+        let needs_description = !self.session_described;
+
+        let tool_reg = Arc::new(Mutex::new(self.tool_registry.clone()));
+
+        // Build environment variables for tool scripts
+        let mut env_vars = HashMap::new();
+        env_vars.insert("NUZZLE_DB".to_string(), self.config.general.db_path.display().to_string());
+        env_vars.insert("NUZZLE_WORKSPACE".to_string(), self.workspace_dir.display().to_string());
+
+        // Spawn async task for tool-augmented chat
         tokio::spawn(async move {
-            let system = "You are Nuzzle, a capable AI news assistant in a terminal RSS reader.\n\
-                You are helpful, direct, and professional. You speak concisely and clearly.\n\
-                You support markdown formatting in your responses.\n\n\
-                TOOLS:\n\
-                - search_news: find articles. Use for surface-level questions.\n\
-                - read_article: read one article in full. Use for follow-ups.\n\
-                - deep_research: search + read multiple full articles. Use for analysis.\n\
-                - add_feed: subscribe to RSS feeds.\n\n\
-                STYLE:\n\
-                - Default: 2-4 sentences, direct and informative.\n\
-                - For analysis or after deep_research: thorough, multi-paragraph.\n\
-                  Use **bold** for key points, # headings for structure,\n\
-                  and share article links as [title](url).\n\
-                - Choose tool depth based on the question. Casual = search_news,\n\
-                  detailed request = deep_research.";
+            let resp = client.chat_with_text_tools(
+                &model,
+                &system_prompt,
+                &q,
+                &chat_history,
+                tool_reg,
+                &stype_str,
+                env_vars,
+            ).await;
 
-            // Build full message history including system prompt
-            let hist = {
-                let r = repo.clone();
-                let r = r.lock().await;
-                r.session_messages(sid, 20).unwrap_or_default()
-            };
-            // Format history as text for streaming prompt
-            let history_text = hist.iter()
-                .map(|m| format!("[{}]: {}", m.role, m.content))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let mut msgs: Vec<ChatMessage> = vec![
-                ChatMessage { role: "system".to_string(), content: system.to_string(), tool_calls: None },
-            ];
-            for m in hist {
-                msgs.push(ChatMessage { role: m.role, content: m.content, tool_calls: None });
-            }
-            msgs.push(ChatMessage { role: "user".to_string(), content: q.clone(), tool_calls: None });
-
-            let tr = client.chat_with_tools(&model, msgs, &tools::all_tools()).await;
-
-            match tr {
-                Ok(resp) => {
-                    let mut tool_results = String::new();
-                    let mut last_search: Vec<crate::types::Entry> = vec![];
-                    if let Some(tcs) = &resp.message.tool_calls {
-                        for tc in tcs {
-                            if tc.function.name == "search_news" {
-                                let query = tc.function.arguments["query"].as_str().unwrap_or("");
-                                let max = tc.function.arguments["max_results"].as_u64().unwrap_or(5) as usize;
-                                let found = tools::execute_search_news(&all_entries, query, max);
-                                tool_results.push_str(&tools::format_search_results(&found));
-                                tool_results.push_str("\n\n");
-                                last_search = found;
-                            } else if tc.function.name == "read_article" {
-                                let idx = tc.function.arguments["index"].as_u64().unwrap_or(0) as usize;
-                                let title = tc.function.arguments["title"].as_str().unwrap_or("");
-                                let src = if last_search.is_empty() { &all_entries[..] } else { &last_search[..] };
-                                let content = tools::execute_read_article(src, idx, title);
-                                tool_results.push_str(&format!("ARTICLE:\n{}\n\n", content));
-                            } else if tc.function.name == "deep_research" {
-                                let topic = tc.function.arguments["topic"].as_str().unwrap_or("");
-                                let depth = tc.function.arguments["depth"].as_u64().unwrap_or(3) as usize;
-                                tool_results.push_str(&tools::execute_deep_research(&all_entries, topic, depth));
-                                tool_results.push_str("\n\n");
-                            } else if tc.function.name == "add_feed" {
-                                let url = tc.function.arguments["url"].as_str().unwrap_or("");
-                                let fm = fm.lock().await;
-                                match fm.add_feed_url(url).await {
-                                    Ok(t) => tool_results.push_str(&format!("+ {}\n", t)),
-                                    Err(e) => tool_results.push_str(&format!("Error: {}\n", e)),
-                                }
-                            }
-                        }
-                    }
-                    let prompt = format!(
-                        "Conversation so far:\n{}\n\nUser asked: \"{}\"\n\nTool results:\n{}\n\nAnswer concisely.",
-                        history_text, q, tool_results
-                    );
-                    let _ = client.generate_stream(&model, &system, &prompt, tx).await;
+            match resp {
+                Ok(text) => {
+                    // Stream the final response
+                    let _ = client.generate_stream(&model, &system_prompt, &text, tx).await;
                 }
                 Err(e) => {
                     tx.send(format!("Error: {}\n", e)).ok();
                     tx.send("__DONE__".to_string()).ok();
                 }
-            };
+            }
         });
 
+        // Store context for post-stream processing
+        self.session_described = needs_description;
+
         Ok(())
+    }
+
+    fn build_system_prompt(&self, tools_prompt: &str, files_prompt: &str) -> String {
+        let mut s = String::from("You are Nuzzle, a capable AI assistant in a terminal application.\n\
+            You are helpful, direct, and professional. You speak concisely and clearly.\n\
+            You support markdown formatting in your responses.\n\n");
+
+        s.push_str("SESSION TYPE: ");
+        s.push_str(self.session_type.as_str());
+        s.push_str("\n\n");
+
+        if !files_prompt.is_empty() {
+            s.push_str("AVAILABLE REFERENCE FILES:\n");
+            s.push_str(files_prompt);
+            s.push_str("\n");
+        }
+
+        if !tools_prompt.is_empty() {
+            s.push_str(tools_prompt);
+        }
+
+        s.push_str("\nINSTRUCTIONS:\n");
+        match self.session_type {
+            SessionType::Search => {
+                s.push_str("- Use web_search to find information online.\n");
+                s.push_str("- Use fetch_page to read full articles.\n");
+                s.push_str("- After research, write results to research.md using write_file.\n");
+                s.push_str("- Provide thorough, well-structured markdown output.\n");
+            }
+            SessionType::Code => {
+                s.push_str("- Use exec to run commands (build, test, lint, etc).\n");
+                s.push_str("- Use read_file to understand existing code.\n");
+                s.push_str("- Use write_file to create or modify files.\n");
+                s.push_str("- Use list_files to explore the project structure.\n");
+                s.push_str("- Read reference files for project context.\n");
+                s.push_str("- Focus on practical, working code solutions.\n");
+            }
+            SessionType::Chat => {
+                s.push_str("- Default: 2-4 sentences, direct and informative.\n");
+                s.push_str("- For analysis or after deep_research: thorough, multi-paragraph.\n");
+                s.push_str("- Use **bold** for key points, # headings for structure.\n");
+            }
+        }
+        s
+    }
+
+    async fn build_session_files_prompt(&self) -> String {
+        let repo = self.repo.lock().await;
+        let files = match repo.list_session_files(self.session_id) {
+            Ok(f) => f,
+            Err(_) => return String::new(),
+        };
+        drop(repo);
+
+        if files.is_empty() { return String::new(); }
+
+        let mut s = String::new();
+        for f in &files {
+            s.push_str(&format!("- {} ({}) at {}\n", f.filename, f.file_type, f.filepath));
+        }
+        s
     }
 
     async fn handle_ask_submit(&mut self, text: &str) -> Result<()> {
@@ -679,30 +786,52 @@ impl App {
             "/new" => {
                 let name = format!("session-{}", Utc::now().format("%H%M%S"));
                 let repo = self.repo.lock().await;
-                self.session_id = repo.create_session(&name, &self.config.ollama.model)?;
+                self.session_id = repo.create_session_typed(&name, &self.config.ollama.model, &SessionType::Chat)?;
                 drop(repo);
                 self.session_name = name;
-                self.blocks.insert(0, "New session.".to_string());
+                self.session_type = SessionType::Chat;
+                self.session_described = false;
+                self.blocks.insert(0, "New chat session.".to_string());
                 self.block_idx = 0;
                 self.mode = AppMode::Ask;
+            }
+            "/search" => {
+                self.start_search_session(parts.get(1).map(|s| s.trim()).unwrap_or("")).await?;
+            }
+            "/code" => {
+                self.start_code_session(parts.get(1).map(|s| s.trim()).unwrap_or("")).await?;
             }
             "/session" => {
                 if parts.len() > 1 {
                     let n = parts[1].trim();
                     let repo = self.repo.lock().await;
-                    self.session_id = repo.create_session(n, &self.config.ollama.model)?;
-                    self.session_name = n.to_string();
+                    // Try to find existing session by name
+                    let sessions = repo.list_sessions()?;
+                    let existing = sessions.iter().find(|s| s.name == n).cloned();
+                    let (sid, stype) = if let Some(ref s) = existing {
+                        (s.id, s.session_type.clone())
+                    } else {
+                        let id = repo.create_session_typed(n, &self.config.ollama.model, &SessionType::Chat)?;
+                        (id, SessionType::Chat)
+                    };
                     drop(repo);
-                    self.blocks.insert(0, format!("Session \"{}\".", n));
+                    self.session_id = sid;
+                    self.session_name = n.to_string();
+                    self.session_type = stype;
+                    self.session_described = true; // existing session, skip auto-describe
+                    self.blocks.insert(0, format!("Switched to session \"{}\" [{}].", n, self.session_type.as_str()));
                 } else {
                     let repo = self.repo.lock().await;
                     let s = repo.list_sessions()?;
                     drop(repo);
-                    let items = s.iter().map(|s| format!("  {}", s.name)).collect::<Vec<_>>().join("\n");
+                    let items: Vec<String> = s.iter().map(|s| {
+                        let desc = if s.description.is_empty() { "(no description)".to_string() } else { s.description.clone() };
+                        format!("  [{}] {} — {}", s.session_type.as_str(), s.name, desc)
+                    }).collect();
                     if items.is_empty() {
                         self.blocks.insert(0, "No sessions.".to_string());
                     } else {
-                        self.blocks.insert(0, items);
+                        self.blocks.insert(0, items.join("\n"));
                     }
                     self.block_idx = 0;
                 }
@@ -734,11 +863,101 @@ impl App {
                 self.mode = AppMode::Ask;
             }
             _ => {
-                self.blocks.insert(0, "/exit /feed /new /session /models /model <name>".to_string());
+                self.blocks.insert(0, "/exit /feed /new /session /search /code /models /model <name>".to_string());
                 self.mode = AppMode::Ask;
             }
         }
         Ok(())
+    }
+
+    async fn start_search_session(&mut self, query: &str) -> Result<()> {
+        let name = format!("search-{}", Utc::now().format("%H%M%S"));
+        let repo = self.repo.lock().await;
+        let sid = repo.create_session_typed(&name, &self.config.ollama.model, &SessionType::Search)?;
+        drop(repo);
+
+        self.session_id = sid;
+        self.session_name = name;
+        self.session_type = SessionType::Search;
+        self.session_described = false;
+
+        let research_dir = PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+        ).join(".local/share/nuzzle/research").join(&self.session_name);
+        std::fs::create_dir_all(&research_dir).unwrap_or_default();
+        self.workspace_dir = research_dir.clone();
+
+        if query.is_empty() {
+            self.blocks.insert(0, "Search session created. Type your research query.".to_string());
+        } else {
+            self.blocks.insert(0, format!("Researching: {}\n", query));
+            self.execute_ask(&format!("Deep research on: {}. Search the web for authoritative information, \
+                read relevant pages, and compile a comprehensive research document. \
+                Write your findings to research.md using write_file.", query)).await?;
+        }
+        self.block_idx = 0;
+        self.mode = AppMode::Ask;
+        Ok(())
+    }
+
+    async fn start_code_session(&mut self, name: &str) -> Result<()> {
+        let session_name = if name.is_empty() {
+            format!("code-{}", Utc::now().format("%H%M%S"))
+        } else {
+            name.to_string()
+        };
+        let repo = self.repo.lock().await;
+        let sid = repo.create_session_typed(&session_name, &self.config.ollama.model, &SessionType::Code)?;
+        drop(repo);
+
+        self.session_id = sid;
+        self.session_name = session_name.clone();
+        self.session_type = SessionType::Code;
+        self.session_described = false;
+
+        let code_dir = PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+        ).join(".local/share/nuzzle/code").join(&session_name);
+        std::fs::create_dir_all(&code_dir).unwrap_or_default();
+        self.workspace_dir = code_dir.clone();
+
+        // Check for research sessions that might be relevant
+        let research_files = self.find_research_files().await;
+
+        let mut msg = format!("Code session \"{}\" created.\nWorkspace: {}\n", session_name, code_dir.display());
+        if !research_files.is_empty() {
+            msg.push_str("\nRelevant research documents found:\n");
+            for f in &research_files {
+                msg.push_str(&format!("- {}\n", f));
+                // Link research files to this session
+                let repo = self.repo.lock().await;
+                let _ = repo.add_session_file(sid, &f, "research_md", &f);
+                drop(repo);
+            }
+            msg.push_str("\nUse read_file to load these as reference documentation.");
+        }
+
+        self.blocks.insert(0, msg);
+        self.block_idx = 0;
+        self.mode = AppMode::Ask;
+        Ok(())
+    }
+
+    async fn find_research_files(&self) -> Vec<String> {
+        let research_base = PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+        ).join(".local/share/nuzzle/research");
+
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&research_base) {
+            for entry in entries.flatten() {
+                let md_path = entry.path().join("research.md");
+                if md_path.exists() {
+                    files.push(md_path.display().to_string());
+                }
+            }
+        }
+        files
     }
 
     // ── search ──

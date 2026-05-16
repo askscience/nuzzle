@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
-use crate::types::{AIMessage, AISession, Embedding, Entry, Feed, Highlight, Tag};
+use crate::types::{AIMessage, AISession, Embedding, Entry, Feed, Highlight, SessionFile, SessionEmbedding, SessionType, Tag};
 
 pub struct Repository {
     conn: Connection,
@@ -272,44 +272,38 @@ impl Repository {
     // --- Sessions ---
 
     pub fn create_session(&self, name: &str, model: &str) -> Result<i64> {
+        self.create_session_typed(name, model, &SessionType::Chat)
+    }
+
+    pub fn create_session_typed(&self, name: &str, model: &str, session_type: &SessionType) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO sessions (name, model) VALUES (?1, ?2)",
-            params![name, model],
+            "INSERT INTO sessions (name, model, session_type) VALUES (?1, ?2, ?3)",
+            params![name, model, session_type.as_str()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
+    pub fn update_session_description(&self, id: i64, description: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET description = ?1 WHERE id = ?2",
+            params![description, id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<AISession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, model, created_at FROM sessions ORDER BY created_at DESC",
+            "SELECT id, name, model, description, session_type, created_at FROM sessions ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(AISession {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                model: row.get(2)?,
-                created_at: row.get::<_, Option<String>>(3)?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|dt| dt.with_timezone(&Utc)),
-            })
-        })?;
+        let rows = stmt.query_map([], Self::map_session)?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn get_session(&self, id: i64) -> Result<Option<AISession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, model, created_at FROM sessions WHERE id = ?1",
+            "SELECT id, name, model, description, session_type, created_at FROM sessions WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(AISession {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                model: row.get(2)?,
-                created_at: row.get::<_, Option<String>>(3)?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|dt| dt.with_timezone(&Utc)),
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], Self::map_session)?;
         match rows.next() { Some(Ok(s)) => Ok(Some(s)), _ => Ok(None) }
     }
 
@@ -340,6 +334,74 @@ impl Repository {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    // --- Session Files ---
+
+    pub fn add_session_file(&self, session_id: i64, filename: &str, file_type: &str, filepath: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO session_files (session_id, filename, file_type, filepath) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, filename, file_type, filepath],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn list_session_files(&self, session_id: i64) -> Result<Vec<SessionFile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, filename, file_type, filepath, created_at FROM session_files WHERE session_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(SessionFile {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                filename: row.get(2)?,
+                file_type: row.get(3)?,
+                filepath: row.get(4)?,
+                created_at: row.get::<_, Option<String>>(5)?
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc)),
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // --- Session Embeddings ---
+
+    pub fn save_session_embedding(&self, session_id: i64, embedding: &[f32], model: &str) -> Result<()> {
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO session_embeddings (session_id, embedding, model) VALUES (?1, ?2, ?3)",
+            params![session_id, bytes, model],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_session_embeddings(&self) -> Result<Vec<SessionEmbedding>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, embedding, model FROM session_embeddings",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let bytes: Vec<u8> = row.get(2)?;
+            let embedding: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            Ok(SessionEmbedding {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                embedding,
+                model: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn session_messages_text(&self, session_id: i64) -> Result<String> {
+        let messages = self.session_messages(session_id, 100)?;
+        Ok(messages.iter()
+            .map(|m| format!("[{}]: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         Ok(Entry {
             id: row.get(0)?,
@@ -360,6 +422,19 @@ impl Repository {
                 .map(|dt| dt.with_timezone(&Utc)),
             is_read: row.get(10)?,
             is_starred: row.get(11)?,
+        })
+    }
+
+    fn map_session(row: &rusqlite::Row) -> rusqlite::Result<AISession> {
+        Ok(AISession {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            model: row.get(2)?,
+            description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            session_type: SessionType::from_str(&row.get::<_, String>(4)?),
+            created_at: row.get::<_, Option<String>>(5)?
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc)),
         })
     }
 }

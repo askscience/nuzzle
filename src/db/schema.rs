@@ -59,10 +59,12 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS sessions (
-            id         INTEGER PRIMARY KEY,
-            name       TEXT NOT NULL,
-            model      TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
+            id           INTEGER PRIMARY KEY,
+            name         TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            description  TEXT DEFAULT '',
+            session_type TEXT NOT NULL DEFAULT 'chat',
+            created_at   TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -73,7 +75,26 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             created_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS session_files (
+            id         INTEGER PRIMARY KEY,
+            session_id INTEGER REFERENCES sessions(id),
+            filename   TEXT NOT NULL,
+            file_type  TEXT NOT NULL,
+            filepath   TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS session_embeddings (
+            id         INTEGER PRIMARY KEY,
+            session_id INTEGER REFERENCES sessions(id),
+            embedding  BLOB NOT NULL,
+            model      TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_embeddings_session ON session_embeddings(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_entries_feed_id ON entries(feed_id);
         CREATE INDEX IF NOT EXISTS idx_entries_guid ON entries(guid);

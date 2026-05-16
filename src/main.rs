@@ -8,6 +8,7 @@ mod highlight;
 mod markdown;
 mod search;
 mod tui;
+mod tools;
 mod types;
 
 use std::sync::Arc;

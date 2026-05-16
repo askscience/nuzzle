@@ -48,7 +48,52 @@ pub struct AISession {
     pub id: i64,
     pub name: String,
     pub model: String,
+    pub description: String,
+    pub session_type: SessionType,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionType {
+    Chat,
+    Code,
+    Search,
+}
+
+impl SessionType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionType::Chat => "chat",
+            SessionType::Code => "code",
+            SessionType::Search => "search",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "code" => SessionType::Code,
+            "search" => SessionType::Search,
+            _ => SessionType::Chat,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionFile {
+    pub id: i64,
+    pub session_id: i64,
+    pub filename: String,
+    pub file_type: String,
+    pub filepath: String,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionEmbedding {
+    pub id: i64,
+    pub session_id: i64,
+    pub embedding: Vec<f32>,
+    pub model: String,
 }
 
 #[derive(Debug, Clone)]

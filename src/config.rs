@@ -7,6 +7,12 @@ pub struct Config {
     pub general: General,
     pub ollama: Ollama,
     pub feeds: Feeds,
+    #[serde(default)]
+    pub search: Search,
+    #[serde(default)]
+    pub tools: Tools,
+    #[serde(default)]
+    pub mcp: Mcp,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -27,6 +33,33 @@ pub struct Feeds {
     pub urls: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Search {
+    #[serde(default = "default_true")]
+    pub duckduckgo_enabled: bool,
+    #[serde(default)]
+    pub brave_api_key: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Tools {
+    #[serde(default = "default_tools_dir")]
+    pub scripts_dir: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Mcp {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<String>,
+}
+
+fn default_true() -> bool { true }
+fn default_tools_dir() -> PathBuf {
+    dirs_config_dir().join("tools")
+}
+
 impl Default for Config {
     fn default() -> Self {
         let data_dir = dirs_data_dir();
@@ -42,6 +75,17 @@ impl Default for Config {
             },
             feeds: Feeds {
                 urls: vec!["https://hnrss.org/frontpage".to_string()],
+            },
+            search: Search {
+                duckduckgo_enabled: true,
+                brave_api_key: String::new(),
+            },
+            tools: Tools {
+                scripts_dir: dirs_config_dir().join("tools"),
+            },
+            mcp: Mcp {
+                enabled: false,
+                servers: vec![],
             },
         }
     }
@@ -96,6 +140,18 @@ impl Config {
             s.push_str(&format!("  \"{}\",\n", url));
         }
         s.push_str("]\n");
+        s.push_str("\n[search]\n");
+        s.push_str(&format!("duckduckgo_enabled = {}\n", self.search.duckduckgo_enabled));
+        s.push_str(&format!("brave_api_key = \"{}\"\n", self.search.brave_api_key));
+        s.push_str("\n[tools]\n");
+        s.push_str(&format!("scripts_dir = \"{}\"\n", self.tools.scripts_dir.display()));
+        s.push_str("\n[mcp]\n");
+        s.push_str(&format!("enabled = {}\n", self.mcp.enabled));
+        s.push_str("servers = [\n");
+        for srv in &self.mcp.servers {
+            s.push_str(&format!("  \"{}\",\n", srv));
+        }
+        s.push_str("]\n");
 
         std::fs::write(&config_path, s)
             .with_context(|| format!("Failed to write config at {:?}", config_path))?;
@@ -106,4 +162,9 @@ impl Config {
 fn dirs_config_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home).join(".config/nuzzle/config.toml")
+}
+
+fn dirs_config_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".config/nuzzle")
 }

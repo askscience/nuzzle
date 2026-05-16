@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use reqwest::Client as HttpClient;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+
+use std::sync::Arc;
+
+use crate::tools::{executor, protocol, registry};
 
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
@@ -185,6 +191,97 @@ impl OllamaClient {
         match self.http.get(format!("{}/api/tags", self.base_url)).send().await {
             Ok(r) => Ok(r.status().is_success()),
             Err(_) => Ok(false),
+        }
+    }
+
+    /// Chat with tool-calling loop using text-based protocol.
+    /// Returns the final response text (after all tool calls resolved).
+    pub async fn chat_with_text_tools(
+        &self,
+        model: &str,
+        system: &str,
+        user_prompt: &str,
+        history: &[ChatMessage],
+        tool_registry: Arc<Mutex<registry::ToolRegistry>>,
+        _session_type: &str,
+        env_vars: HashMap<String, String>,
+    ) -> Result<String> {
+        let mut messages: Vec<ChatMessage> = vec![
+            ChatMessage { role: "system".to_string(), content: system.to_string(), tool_calls: None },
+        ];
+        for m in history {
+            messages.push(ChatMessage { role: m.role.clone(), content: m.content.clone(), tool_calls: None });
+        }
+        messages.push(ChatMessage { role: "user".to_string(), content: user_prompt.to_string(), tool_calls: None });
+
+        let max_loops = 8;
+
+        for _ in 0..max_loops {
+            let resp = self.chat(model, messages.clone()).await?;
+
+            if !protocol::has_tool_calls(&resp) {
+                return Ok(resp);
+            }
+
+            let calls = protocol::parse_tool_calls(&resp);
+            let clean_response = protocol::strip_tool_blocks(&resp);
+
+            // Add assistant's text (without tool blocks) first
+            if !clean_response.is_empty() {
+                messages.push(ChatMessage { role: "assistant".to_string(), content: clean_response, tool_calls: None });
+            }
+
+            // Execute all tool calls and add results
+            let mut tool_output = String::new();
+            let reg = tool_registry.lock().await;
+            for call in &calls {
+                tool_output.push_str(&format!("Tool: {} {}\n", call.name, call.args));
+                match executor::execute_tool(&reg, call, &env_vars).await {
+                    Ok(output) => {
+                        let trimmed = if output.len() > 8000 {
+                            format!("{}...\n[truncated]", &output[..8000])
+                        } else {
+                            output
+                        };
+                        tool_output.push_str(&trimmed);
+                    }
+                    Err(e) => {
+                        tool_output.push_str(&format!("ERROR: {}\n", e));
+                    }
+                }
+                tool_output.push_str("\n---\n");
+            }
+            drop(reg);
+
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: format!("Tool execution results:\n{}", tool_output),
+                tool_calls: None,
+            });
+        }
+
+        // Final response after max loops
+        self.chat(model, messages).await
+    }
+
+    /// Generate a short session description from the first exchange
+    pub async fn generate_description(&self, model: &str, messages: &[ChatMessage]) -> String {
+        let mut prompt = String::from("Summarize this conversation topic in ONE short sentence (max 100 characters).\n\n");
+        for m in messages {
+            prompt.push_str(&format!("[{}]: {}\n", m.role, m.content));
+        }
+        prompt.push_str("\nDescription: ");
+
+        match self.generate(model, &prompt).await {
+            Ok(desc) => {
+                let desc = desc.trim().trim_matches('"').trim();
+                if desc.len() > 120 {
+                    format!("{}...", &desc[..117])
+                } else {
+                    desc.to_string()
+                }
+            }
+            Err(_) => String::new(),
         }
     }
 }
