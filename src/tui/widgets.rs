@@ -5,10 +5,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wra
 use tui_textarea::TextArea;
 
 // Pastel palette
-const ACCENT: Color = Color::Rgb(135, 206, 250);  // light sky blue
-const DIM: Color = Color::Rgb(169, 169, 169);     // soft grey
-const QUESTION: Color = Color::Rgb(176, 196, 222); // light steel blue
-const CURSOR: Color = Color::Rgb(255, 255, 255);   // white
+const ACCENT: Color = Color::Rgb(152, 208, 238);
+const DIM: Color = Color::Rgb(147, 147, 155);
+const QUESTION: Color = Color::Rgb(180, 190, 218);
+const CURSOR: Color = Color::Rgb(238, 238, 238);
 
 fn accent_style() -> Style { Style::new().fg(ACCENT) }
 fn accent_bold() -> Style { Style::new().bold().fg(ACCENT) }
