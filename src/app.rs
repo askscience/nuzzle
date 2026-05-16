@@ -64,10 +64,17 @@ pub struct App {
     session_name: String,
     session_type: SessionType,
     session_described: bool,
+    session_list: Vec<AISession>,
+    session_list_selected: usize,
 
     // tool system
     tool_registry: ToolRegistry,
     workspace_dir: PathBuf,
+
+    // tool activity feedback
+    tool_activity: Option<String>,
+    tool_activity_rx: Option<mpsc::UnboundedReceiver<String>>,
+    tool_activity_at: Instant,
 
     // conversation — blocks[0] = current/latest
     blocks: Vec<String>,
@@ -137,8 +144,13 @@ impl App {
             session_name: String::new(),
             session_type: SessionType::Chat,
             session_described: false,
+            session_list: vec![],
+            session_list_selected: 0,
             tool_registry,
             workspace_dir: data_dir.join("code"),
+            tool_activity: None,
+            tool_activity_rx: None,
+            tool_activity_at: Instant::now(),
             blocks: vec![],
             block_idx: 0,
             app_ready: false,
@@ -247,6 +259,9 @@ impl App {
             // process streaming tokens
             self.drain_stream();
 
+            // process tool status updates
+            self.drain_tool_status();
+
             if self.save_answer_needed {
                 self.save_answer_needed = false;
                 // Save AI response to DB
@@ -323,6 +338,27 @@ impl App {
         }
     }
 
+    fn drain_tool_status(&mut self) {
+        if let Some(rx) = &mut self.tool_activity_rx {
+            while let Ok(msg) = rx.try_recv() {
+                if msg == "done" || msg.starts_with("done:") {
+                    if msg.starts_with("done:") {
+                        self.tool_activity = Some(msg[5..].trim().to_string());
+                        self.tool_activity_at = Instant::now();
+                    }
+                    self.tool_activity_rx = None;
+                    break;
+                }
+                self.tool_activity = Some(msg);
+                self.tool_activity_at = Instant::now();
+            }
+        }
+        // Auto-clear after 8 seconds of no updates
+        if self.tool_activity.is_some() && self.tool_activity_at.elapsed() > Duration::from_secs(8) {
+            self.tool_activity = None;
+        }
+    }
+
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match self.mode {
             AppMode::Search => {
@@ -377,6 +413,37 @@ impl App {
                             self.config.ollama.model = m.clone();
                             let _ = self.config.save();
                             self.set_status(&format!("Model: {}", m));
+                        }
+                        self.mode = self.prev_mode.clone();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = self.prev_mode.clone();
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            AppMode::SessionSelect => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down if key.kind == KeyEventKind::Press => {
+                        if self.session_list_selected + 1 < self.session_list.len() {
+                            self.session_list_selected += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if key.kind == KeyEventKind::Press => {
+                        if self.session_list_selected > 0 {
+                            self.session_list_selected -= 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(s) = self.session_list.get(self.session_list_selected).cloned() {
+                            self.session_id = s.id;
+                            self.session_name = s.name.clone();
+                            self.session_type = s.session_type.clone();
+                            self.session_described = true;
+                            self.blocks.clear();
+                            self.block_idx = 0;
+                            self.set_status(&format!("Session: {} [{}]", s.name, s.session_type.as_str()));
                         }
                         self.mode = self.prev_mode.clone();
                     }
@@ -448,7 +515,13 @@ impl App {
 
         // ── Header ──
         let (hl, hr) = if showing_answer {
-            (format!(" Q&A  ·  {}/{}", self.block_idx + 1, self.blocks.len()), String::new())
+            let tool = self.tool_activity.as_deref().unwrap_or("");
+            let left = format!(" Q&A  ·  {}/{}", self.block_idx + 1, self.blocks.len());
+            if !tool.is_empty() {
+                (left, tool.to_string())
+            } else {
+                (left, String::new())
+            }
         } else if self.mode == AppMode::Search {
             (" Search  ·  Enter to run".to_string(), String::new())
         } else {
@@ -490,6 +563,12 @@ impl App {
         if self.mode == AppMode::ModelSelect {
             let popup = layout::centered_rect(f.area(), 60, 70);
             f.render_widget(widgets::ModelList { models: &self.available_models, selected: self.model_list_selected, current: &self.config.ollama.model }, popup);
+        }
+
+        // ── Session popup ──
+        if self.mode == AppMode::SessionSelect {
+            let popup = layout::centered_rect(f.area(), 70, 75);
+            f.render_widget(widgets::SessionList { sessions: &self.session_list, selected: self.session_list_selected, current_name: &self.session_name }, popup);
         }
     }
 
@@ -562,7 +641,7 @@ impl App {
             AppMode::Search | AppMode::Ask | AppMode::Digest => {
                 self.mode = AppMode::Reading;
             }
-            AppMode::Help | AppMode::ModelSelect => self.mode = self.prev_mode.clone(),
+            AppMode::Help | AppMode::ModelSelect | AppMode::SessionSelect => self.mode = self.prev_mode.clone(),
             _ => {}
         }
     }
@@ -624,6 +703,11 @@ impl App {
         self.streaming_rx = Some(rx);
         self.is_streaming = true;
 
+        // Status channel for tool activity feedback
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        self.tool_activity_rx = Some(status_rx);
+        self.tool_activity = None;
+
         let client = self.ai.clone();
         let model = self.config.ollama.model.clone();
         let q = question.to_string();
@@ -673,6 +757,7 @@ impl App {
                 tool_reg,
                 &stype_str,
                 env_vars,
+                Some(status_tx),
             ).await;
 
             match resp {
@@ -818,24 +903,20 @@ impl App {
                     self.session_id = sid;
                     self.session_name = n.to_string();
                     self.session_type = stype;
-                    self.session_described = true; // existing session, skip auto-describe
+                    self.session_described = true;
                     self.blocks.insert(0, format!("Switched to session \"{}\" [{}].", n, self.session_type.as_str()));
+                    self.block_idx = 0;
+                    self.mode = AppMode::Ask;
                 } else {
                     let repo = self.repo.lock().await;
-                    let s = repo.list_sessions()?;
+                    self.session_list = repo.list_sessions()?;
                     drop(repo);
-                    let items: Vec<String> = s.iter().map(|s| {
-                        let desc = if s.description.is_empty() { "(no description)".to_string() } else { s.description.clone() };
-                        format!("  [{}] {} — {}", s.session_type.as_str(), s.name, desc)
-                    }).collect();
-                    if items.is_empty() {
-                        self.blocks.insert(0, "No sessions.".to_string());
-                    } else {
-                        self.blocks.insert(0, items.join("\n"));
-                    }
-                    self.block_idx = 0;
+                    self.session_list_selected = self.session_list.iter()
+                        .position(|s| s.id == self.session_id)
+                        .unwrap_or(0);
+                    self.prev_mode = self.mode.clone();
+                    self.mode = AppMode::SessionSelect;
                 }
-                self.mode = AppMode::Ask;
             }
             "/models" => {
                 let m = self.ai.list_models().await.unwrap_or_default();

@@ -196,6 +196,7 @@ impl OllamaClient {
 
     /// Chat with tool-calling loop using text-based protocol.
     /// Returns the final response text (after all tool calls resolved).
+    /// Optionally sends status updates through status_tx for UI feedback.
     pub async fn chat_with_text_tools(
         &self,
         model: &str,
@@ -205,6 +206,7 @@ impl OllamaClient {
         tool_registry: Arc<Mutex<registry::ToolRegistry>>,
         _session_type: &str,
         env_vars: HashMap<String, String>,
+        status_tx: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<String> {
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage { role: "system".to_string(), content: system.to_string(), tool_calls: None },
@@ -215,11 +217,28 @@ impl OllamaClient {
         messages.push(ChatMessage { role: "user".to_string(), content: user_prompt.to_string(), tool_calls: None });
 
         let max_loops = 8;
+        let mut tool_summary = Vec::new();
 
         for _ in 0..max_loops {
+            if let Some(ref tx) = status_tx {
+                let _ = tx.send("thinking...".to_string());
+            }
+
             let resp = self.chat(model, messages.clone()).await?;
 
+            if let Some(ref tx) = status_tx {
+                let _ = tx.send("analyzing...".to_string());
+            }
+
             if !protocol::has_tool_calls(&resp) {
+                // Send final summary
+                if !tool_summary.is_empty() {
+                    if let Some(ref tx) = status_tx {
+                        let _ = tx.send(format!("done: {}", tool_summary.join(", ")));
+                    }
+                } else if let Some(ref tx) = status_tx {
+                    let _ = tx.send("done".to_string());
+                }
                 return Ok(resp);
             }
 
@@ -235,17 +254,32 @@ impl OllamaClient {
             let mut tool_output = String::new();
             let reg = tool_registry.lock().await;
             for call in &calls {
+                let label = format!("{} {}", call.name, call.args);
+                if let Some(ref tx) = status_tx {
+                    let _ = tx.send(label.clone());
+                }
+
                 tool_output.push_str(&format!("Tool: {} {}\n", call.name, call.args));
                 match executor::execute_tool(&reg, call, &env_vars).await {
                     Ok(output) => {
                         let trimmed = if output.len() > 8000 {
                             format!("{}...\n[truncated]", &output[..8000])
                         } else {
-                            output
+                            output.clone()
                         };
+                        let output_lines = output.lines().count();
+                        let output_bytes = output.len();
+                        tool_summary.push(format!("{} ({} lines)", call.name, output_lines));
+                        if let Some(ref tx) = status_tx {
+                            let _ = tx.send(format!("{}: {} lines, {} bytes", call.name, output_lines, output_bytes));
+                        }
                         tool_output.push_str(&trimmed);
                     }
                     Err(e) => {
+                        tool_summary.push(format!("{} failed", call.name));
+                        if let Some(ref tx) = status_tx {
+                            let _ = tx.send(format!("{}: ERROR", call.name));
+                        }
                         tool_output.push_str(&format!("ERROR: {}\n", e));
                     }
                 }
@@ -261,6 +295,13 @@ impl OllamaClient {
         }
 
         // Final response after max loops
+        if !tool_summary.is_empty() {
+            if let Some(ref tx) = status_tx {
+                let _ = tx.send(format!("done: {}", tool_summary.join(", ")));
+            }
+        } else if let Some(ref tx) = status_tx {
+            let _ = tx.send("done".to_string());
+        }
         self.chat(model, messages).await
     }
 

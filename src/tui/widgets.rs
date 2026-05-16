@@ -4,6 +4,8 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 use tui_textarea::TextArea;
 
+use crate::types::AISession;
+
 // Pastel palette
 const ACCENT: Color = Color::Rgb(152, 208, 238);
 const DIM: Color = Color::Rgb(147, 147, 155);
@@ -36,8 +38,41 @@ impl Widget for Header<'_> {
                 buf.set_string(x, area.y, text, style);
             }
         }
-        if area.height > 1 {
-            buf.set_string(area.x, area.y + 1, &sep, dim_style());
+        buf.set_string(area.x, area.y + 1, &sep, style);
+    }
+}
+
+// ── Session selector ──
+
+pub struct SessionList<'a> {
+    pub sessions: &'a [AISession],
+    pub selected: usize,
+    pub current_name: &'a str,
+}
+
+impl Widget for SessionList<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Clear.render(area, buf);
+        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Plain)
+            .border_style(accent_style()).title_top(" Sessions ");
+        let inner = block.inner(area);
+        block.render(area, buf);
+        if self.sessions.is_empty() {
+            buf.set_string(inner.x + 1, inner.y + 1, "No sessions.", dim_style());
+            return;
+        }
+        for (i, s) in self.sessions.iter().enumerate() {
+            if i as u16 + 2 >= inner.height { break; }
+            let sel = i == self.selected;
+            let pfx = if sel { "▸ " } else { "  " };
+            let mark = if s.name == self.current_name { " ←" } else { "" };
+            let style = if sel { accent_bold() } else { Style::new() };
+            let desc = if s.description.is_empty() { "(no description)" } else { &s.description };
+            let line = format!("{}[{}] {} — {}{}",
+                pfx, s.session_type.as_str(), s.name, desc, mark);
+            let w = inner.width.saturating_sub(2) as usize;
+            let trunc: String = line.chars().take(w).collect();
+            buf.set_string(inner.x + 1, inner.y + 2 + i as u16, &trunc, style);
         }
     }
 }

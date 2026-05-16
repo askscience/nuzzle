@@ -132,6 +132,7 @@ pub enum AppMode {
     Highlight,
     Help,
     ModelSelect,
+    SessionSelect,
 }
 
 #[derive(Debug, Clone)]
