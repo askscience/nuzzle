@@ -22,13 +22,17 @@ Type questions in the ask bar at the bottom. Nuzzle searches your feeds, streams
 curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/master/install.sh | bash
 ```
 
-**Upgrade** an existing install (re-clones, rebuilds, replaces the same `nuzzle` on your `PATH`):
+**From a local clone** (preserves your changes):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/askscience/nuzzle/master/install.sh | bash -s -- --upgrade
+./install.sh
 ```
 
-From a git checkout you can run `./install.sh` or `./install.sh --upgrade`.
+**Upgrade** from upstream (clones latest from GitHub, replaces binary):
+
+```bash
+./install.sh --upgrade
+```
 
 Requirements: Rust toolchain, Ollama.
 

@@ -194,18 +194,56 @@ if [ "$UPGRADE" -eq 1 ]; then
     echo ""
 fi
 
-# === Clone & build ===
+# === Detect local source ===
+# If running from a local nuzzle git clone, build from there (preserves local changes).
+# Otherwise, clone the upstream repo into a temp dir.
 REPO="https://github.com/askscience/nuzzle"
-TMPDIR=$(mktemp -d)
+BUILD_DIR=""
+IS_LOCAL=0
+USE_TMP=0
 
-line "$DOT Cloning $REPO..."
-git clone --depth 1 "$REPO" "$TMPDIR" 2>/dev/null || {
-    line "${RED}Clone failed — is the repo public?${NC}"
-    exit 1
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/Cargo.toml" ]; then
+    if grep -q 'name = "nuzzle"' "$SCRIPT_DIR/Cargo.toml" 2>/dev/null; then
+        BUILD_DIR="$SCRIPT_DIR"
+        IS_LOCAL=1
+    fi
+fi
+
+# Also check PWD (in case script is piped from curl but we're in a clone)
+if [ "$IS_LOCAL" -eq 0 ] && [ -f "./Cargo.toml" ]; then
+    if grep -q 'name = "nuzzle"' "./Cargo.toml" 2>/dev/null; then
+        BUILD_DIR="$(pwd)"
+        IS_LOCAL=1
+    fi
+fi
+
+if [ "$UPGRADE" -eq 1 ]; then
+    TMPDIR=$(mktemp -d)
+    line "$DOT Cloning $REPO..."
+    git clone --depth 1 "$REPO" "$TMPDIR" 2>/dev/null || {
+        line "${RED}Clone failed — is the repo public?${NC}"
+        exit 1
+    }
+    BUILD_DIR="$TMPDIR"
+    USE_TMP=1
+elif [ "$IS_LOCAL" -eq 1 ]; then
+    line "$DOT ${BOLD}Local clone detected${NC} at $BUILD_DIR — building from source"
+    line "   ${YELLOW}Your local changes are preserved. Use --upgrade to pull from GitHub.${NC}"
+else
+    TMPDIR=$(mktemp -d)
+    line "$DOT Cloning $REPO..."
+    git clone --depth 1 "$REPO" "$TMPDIR" 2>/dev/null || {
+        line "${RED}Clone failed — is the repo public?${NC}"
+        exit 1
+    }
+    BUILD_DIR="$TMPDIR"
+    USE_TMP=1
+fi
+echo ""
 
 line "$DOT Building release binary (this may take a few minutes)..."
-(cd "$TMPDIR" && cargo build --release 2>&1) | while IFS= read -r l; do
+(cd "$BUILD_DIR" && cargo build --release 2>&1) | while IFS= read -r l; do
     case "$l" in
         *Compiling*) printf "  %b\r" "${CYAN}${l}${NC}" ;;
         *error*)    line "\n${RED}$l${NC}" ;;
@@ -240,10 +278,10 @@ else
 fi
 
 if [ "$NO_SUDO" -eq 1 ]; then
-    cp "$TMPDIR/target/release/nuzzle" "$INSTALL_DIR/nuzzle"
+    cp "$BUILD_DIR/target/release/nuzzle" "$INSTALL_DIR/nuzzle"
     line "${GREEN}Installed nuzzle → $INSTALL_DIR/nuzzle${NC}"
 else
-    sudo cp "$TMPDIR/target/release/nuzzle" "$INSTALL_DIR/nuzzle"
+    sudo cp "$BUILD_DIR/target/release/nuzzle" "$INSTALL_DIR/nuzzle"
     line "${GREEN}Installed nuzzle → $INSTALL_DIR/nuzzle${NC} ${YELLOW}(sudo)${NC}"
 fi
 

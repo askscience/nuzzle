@@ -390,7 +390,7 @@ impl App {
             let visible = self.blocks.get(self.block_idx).map(|s| s.as_str()).unwrap_or("");
             let mut text = ratatui::text::Text::default();
             if let Some((question, answer)) = visible.split_once('\n') {
-                text.lines.push(Line::from(Span::styled(question, ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(176, 196, 222)))));
+                text.lines.push(Line::from(Span::styled(question, ratatui::style::Style::new().fg(ratatui::style::Color::Rgb(180, 190, 218)))));
                 text.extend(markdown::render(answer));
             } else {
                 text = markdown::render(visible);
