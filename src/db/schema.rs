@@ -103,5 +103,17 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_embeddings_entry_id ON embeddings(entry_id);
         ",
     )?;
+
+    // Migrate existing databases: add columns that may be missing from older schemas
+    let migrations: &[(&str, &str)] = &[
+        ("sessions", "description TEXT DEFAULT ''"),
+        ("sessions", "session_type TEXT NOT NULL DEFAULT 'chat'"),
+    ];
+    for (table, col_def) in migrations {
+        let sql = format!("ALTER TABLE {} ADD COLUMN {}", table, col_def);
+        // Ignore errors if column already exists
+        let _ = conn.execute(&sql, []);
+    }
+
     Ok(())
 }
